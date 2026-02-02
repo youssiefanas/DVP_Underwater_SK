@@ -15,7 +15,6 @@ namespace frontend {
 class FeatureExtractor;
 class FeatureMatcher;
 struct ORBParams;
-class PoseEstimator;
 
 // Tracking Stage
 enum class Stage {
@@ -54,10 +53,6 @@ private:
     
     // Feature Matcher
     std::shared_ptr<FeatureMatcher> feature_matcher_;
-
-    // Pose Estimator
-    std::shared_ptr<PoseEstimator> pose_estimator_;
-
     // Camera Intrinsics
     cv::Mat K_;
 };

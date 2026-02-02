@@ -1,5 +1,4 @@
 #include "frontend/VisualFrontend.hpp"
-#include "frontend/PoseEstimator.hpp"
 #include <iostream> 
 
 namespace frontend {
@@ -8,7 +7,6 @@ VisualFrontend::VisualFrontend(const ORBParams& params, const cv::Mat& K) : stag
     feature_extractor_ = std::make_shared<FeatureExtractor>(params);
     viewer_ = std::make_shared<Viewer>();
     feature_matcher_ = std::make_shared<FeatureMatcher>(params.matcher_type);
-    pose_estimator_ = std::make_shared<PoseEstimator>();
     K_ = K.clone();
 }
 
@@ -71,9 +69,12 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
             points_prev.push_back(last_frame_->getKeypoints()[m.queryIdx].pt);
             points_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
         }
-        // 3. Relative Pose Estimation
-        cv::Mat R, t, mask;
-        if (pose_estimator_->estimate(points_prev, points_curr, K_, R, t, mask)) {
+        // 3. Geometric Verification (RANSAC)
+        // We calculate the Essential Matrix (E). This requires the camera intrinsics (K).
+        // Assuming you have a cv::Mat K (Intrinsics Matrix)
+        cv::Mat mask; // This will store 0 for outliers, 1 for inliers
+        cv::Mat E = cv::findEssentialMat(points_prev, points_curr, K_, cv::RANSAC, 0.999, 1.0, mask);
+
             // 4. Filter the matches (Keep only inliers)
             std::vector<cv::DMatch> good_matches_geometric;
             for (int i = 0; i < mask.rows; i++) {
@@ -84,12 +85,6 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
 
             std::cout << "[Frontend] Raw Matches: " << matches.size() 
                     << " -> Geometric Inliers: " << good_matches_geometric.size() << std::endl;
-            
-            std::cout << "[Frontend] Relative Pose Estimated!" << std::endl;
-            std::cout << "R:\n" << R << "\nt:\n" << t << std::endl;
-        } else {
-            std::cout << "[Frontend] Pose estimation failed." << std::endl;
-        }
 
         // --- Critical Step: Shift the "Window" ---
         // The current frame becomes the old frame for the next iteration
