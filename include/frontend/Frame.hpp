@@ -4,8 +4,6 @@
 #include <vector>
 #include <memory>
 #include <gtsam/geometry/Pose3.h>
-#include "MapPoint.hpp" // Added dependency
-
 namespace frontend {
 
 class Frame {
@@ -41,36 +39,6 @@ public:
     // Access features (const reference to avoid copying)
     const std::vector<cv::KeyPoint>& getKeypoints() const { return keypoints_; }
     const cv::Mat& getDescriptors() const { return descriptors_; }
-    
-    // --- New for Canonical Dataflow ---
-    
-    // Set a MapPoint observation. 
-    // This is transient for the Frame (lifetime: one iteration)
-    void addObservation(size_t idx, MapPoint::Ptr mp) {
-        if(idx < observations_.size()) observations_[idx] = mp;
-    }
-    
-    MapPoint::Ptr getObservation(size_t idx) const {
-        if(idx < observations_.size()) return observations_[idx];
-        return nullptr;
-    }
-
-    // Prepare observations vector (call after setFeatures)
-    void resizeObservations(size_t size) {
-        observations_.resize(size, nullptr);
-    }
-    
-    // Pose Guess (from constant velocity or IMU)
-    void setPoseGuess(const gtsam::Pose3& pose) { pose_guess_ = pose; }
-    gtsam::Pose3 getPoseGuess() const { return pose_guess_; }
-    
-    // Observations Access
-    std::vector<MapPoint::Ptr>& getObservations() { return observations_; }
-    const std::vector<MapPoint::Ptr>& getObservations() const { return observations_; }
-    
-    // Camera Intrinsics
-    void setCamera(const cv::Mat& K) { K_ = K.clone(); }
-    const cv::Mat& getCamera() const { return K_; }
 
 public:
     // Public Data Members (Optional: Keep public for easy access if you prefer struct-style)
@@ -92,11 +60,6 @@ private:
     // Features
     std::vector<cv::KeyPoint> keypoints_;
     cv::Mat descriptors_;
-
-    // Canonical Dataflow Members
-    std::vector<MapPoint::Ptr> observations_; // Aligned with keypoints_
-    gtsam::Pose3 pose_guess_; // Prior for tracking
-    cv::Mat K_; // Intrinsics
 };
 
 } // namespace frontend

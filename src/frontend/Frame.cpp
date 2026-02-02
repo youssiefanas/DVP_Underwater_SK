@@ -25,7 +25,6 @@ Frame::Ptr Frame::createFrame(cv::Mat image, double timestamp) {
 void Frame::setFeatures(const std::vector<cv::KeyPoint>& kps, const cv::Mat& des) {
     keypoints_ = kps;
     descriptors_ = des;
-    resizeObservations(kps.size());
 }
 
 } // namespace frontend

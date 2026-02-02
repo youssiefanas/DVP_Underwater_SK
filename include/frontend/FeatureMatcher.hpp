@@ -5,9 +5,7 @@
 #include <string>
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
-#include <opencv2/features2d.hpp>
 #include "Frame.hpp"
-#include "MapPoint.hpp" // Added dependency
 
 namespace frontend {
 
@@ -32,16 +30,6 @@ public:
      * @return std::vector<cv::DMatch> List of good matches
      */
     std::vector<cv::DMatch> match(Frame::Ptr frame1, Frame::Ptr frame2);
-
-    /**
-     * @brief Match features in current frame to the Local Map using projection.
-     * 
-     * @param current Frame to match (must have pose guess)
-     * @param local_map_points Vector of MapPoints to search for
-     * @param radius Search radius in pixels
-     * @return Number of matches found
-     */
-    int matchProjection(Frame::Ptr current, const std::vector<MapPoint::Ptr>& local_map_points, float radius = 5.0f);
 
 private:
     cv::Ptr<cv::DescriptorMatcher> matcher_;

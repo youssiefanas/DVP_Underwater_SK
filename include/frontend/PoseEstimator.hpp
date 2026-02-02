@@ -1,9 +1,7 @@
 #pragma once
 
 #include <opencv2/opencv.hpp>
-#include <opencv2/opencv.hpp>
 #include <vector>
-#include "Frame.hpp" // Added dependency
 
 namespace frontend {
 
@@ -31,15 +29,6 @@ public:
                   cv::Mat& R,
                   cv::Mat& t,
                   cv::Mat& mask);
-
-    /**
-     * @brief Refine pose using PnP with MapPoint observations.
-     * Phase 2: Local Refinement.
-     * 
-     * @param frame Frame with observations and initial pose guess.
-     * @return true if refinement successful (enough inliers).
-     */
-    bool estimateRefined(Frame::Ptr frame);
 };
 
 } // namespace frontend
