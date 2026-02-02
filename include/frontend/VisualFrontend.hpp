@@ -8,6 +8,8 @@
 #include "FeatureMatcher.hpp"
 #include "VisualTypes.hpp"
 #include "Viewer.hpp"
+#include "PoseEstimator.hpp"
+#include <gtsam/geometry/Pose3.h>
 
 namespace frontend {
 
@@ -15,6 +17,7 @@ namespace frontend {
 class FeatureExtractor;
 class FeatureMatcher;
 struct ORBParams;
+class PoseEstimator;
 
 // Tracking Stage
 enum class Stage {
@@ -53,6 +56,10 @@ private:
     
     // Feature Matcher
     std::shared_ptr<FeatureMatcher> feature_matcher_;
+
+    // Pose Estimator
+    std::shared_ptr<PoseEstimator> pose_estimator_;
+    
     // Camera Intrinsics
     cv::Mat K_;
 };

@@ -30,6 +30,7 @@ ament_auto_add_library(${PROJECT_NAME}_frontend
   src/frontend/FeatureExtractor.cpp
   src/frontend/FeatureMatcher.cpp
   src/frontend/Frame.cpp
+  src/frontend/PoseEstimator.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_frontend PUBLIC

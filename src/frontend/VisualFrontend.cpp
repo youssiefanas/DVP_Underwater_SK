@@ -1,4 +1,5 @@
 #include "frontend/VisualFrontend.hpp"
+#include "dv_slam/utility.hpp"
 #include <iostream> 
 
 namespace frontend {
@@ -7,6 +8,7 @@ VisualFrontend::VisualFrontend(const ORBParams& params, const cv::Mat& K) : stag
     feature_extractor_ = std::make_shared<FeatureExtractor>(params);
     viewer_ = std::make_shared<Viewer>();
     feature_matcher_ = std::make_shared<FeatureMatcher>(params.matcher_type);
+    pose_estimator_ = std::make_shared<PoseEstimator>();
     K_ = K.clone();
 }
 
@@ -19,16 +21,22 @@ bool VisualFrontend::handleImage(
 
     // Feature extraction (annotation)
     extractFeatures(frame);
-    
+    bool success = process(frame);
+
     // Visualization
     if (viewer_) {
         cv::Mat img_out;
         cv::drawKeypoints(frame->getImage(), frame->getKeypoints(), img_out);
+        // Draw tracked points in green
+        const auto& points = frame->getKeypoints();
+        for (const auto& p : points) {
+            cv::circle(img_out, p.pt, 2, cv::Scalar(0, 255, 0), -1);
+        }
+
         viewer_->show(img_out);
     }
 
-    // Core frontend logic
-    return process(frame);
+    return success;
 }
 
 void VisualFrontend::extractFeatures(Frame::Ptr frame)
@@ -38,62 +46,67 @@ void VisualFrontend::extractFeatures(Frame::Ptr frame)
 
 bool VisualFrontend::process(Frame::Ptr current_frame) {
     
-    // --- 1. Initialization Case (First Frame) ---
-    if (stage_ == Stage::NO_IMAGES_YET) {
-        std::cout << "[Frontend] First frame received. Initializing..." << std::endl;
-        
-        // Store this frame as the "previous" frame for the next iteration
-        last_frame_ = current_frame;
-        
-        // Advance state
-        stage_ = Stage::INITIALIZED;
-        
-        // Return false because we can't do odometry with just 1 frame
+    // --- 1. Initialization Case 
+    if (!last_frame_) {
+      std::cout << "[Frontend] First frame received. Initializing..."
+                << std::endl;
+      last_frame_ = current_frame;
+      current_frame->setPose(gtsam::Pose3()); // Identity pose for the first frame
+      return false;
+    } 
+
+    std::vector<cv::DMatch> matches = feature_matcher_->match(last_frame_, current_frame);
+
+    if (matches.size() < 20) {
+        std::cout << "[Frontend] Not enough matches found. Skipping frame."
+                  << std::endl;
         return false;
     }
 
-    // --- 2. Tracking Case (Subsequent Frames) ---
-    if (stage_ == Stage::INITIALIZED || stage_ == Stage::TRACKING) {
-        // std::cout << "[Frontend] Processing Frame ID: " << current_frame->getId() << std::endl;
+    std::vector<cv::Point2f> points_prev, points_curr;
+    for (const auto& m : matches) {
+        points_prev.push_back(last_frame_->getKeypoints()[m.queryIdx].pt);
+        points_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
+    }
 
-        // Match features between previous and current frame
-        std::vector<cv::DMatch> matches = feature_matcher_->match(last_frame_, current_frame);
+      cv::Mat R, t, mask;
+      if (pose_estimator_->estimate(points_prev, points_curr, K_, R, t, mask)) {
 
-        if (matches.size() < 10) {
-            std::cout << "[Frontend] Not enough matches found. Skipping frame." << std::endl;
+        std::vector<cv::Point2f> inliers_prev, inliers_curr;
+
+        int inliers_count = 0;
+        for (int i=0; i<mask.rows; i++){
+            if (mask.at<uchar>(i) == 1){
+                inliers_count++;
+                inliers_prev.push_back(points_prev[i]);
+                inliers_curr.push_back(points_curr[i]);
+            }
+        }
+        if (inliers_count < 20){
+            std::cout << "[Frontend] Not enough inliers. Skipping frame." << std::endl;
             return false;
         }
 
-        std::vector<cv::Point2f> points_prev, points_curr;
-        for (const auto& m : matches) {
-            points_prev.push_back(last_frame_->getKeypoints()[m.queryIdx].pt);
-            points_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
-        }
-        // 3. Geometric Verification (RANSAC)
-        // We calculate the Essential Matrix (E). This requires the camera intrinsics (K).
-        // Assuming you have a cv::Mat K (Intrinsics Matrix)
-        cv::Mat mask; // This will store 0 for outliers, 1 for inliers
-        cv::Mat E = cv::findEssentialMat(points_prev, points_curr, K_, cv::RANSAC, 0.999, 1.0, mask);
+        std::vector<cv::Point3f> points_3d;
+        pose_estimator_->triangulate(inliers_prev, inliers_curr, K_, R, t, points_3d);
 
-            // 4. Filter the matches (Keep only inliers)
-            std::vector<cv::DMatch> good_matches_geometric;
-            for (int i = 0; i < mask.rows; i++) {
-                if (mask.at<uchar>(i) == 1) {
-                    good_matches_geometric.push_back(matches[i]);
-                }
-            }
+        gtsam::Pose3 T_last_curr = cvToGtsam(R, t);
+        gtsam::Pose3 T_last_last = last_frame_->getPose();
+        gtsam::Pose3 T_w_c = T_last_last * T_last_curr;
+        current_frame->setPose(T_w_c);
 
-            std::cout << "[Frontend] Raw Matches: " << matches.size() 
-                    << " -> Geometric Inliers: " << good_matches_geometric.size() << std::endl;
+        // Log Output for Verification
+        std::cout << "[Frontend] Inliers: " << inliers_count << "/" << matches.size() 
+                  << " | 3D Points: " << points_3d.size() << std::endl;
+        std::cout << "Pose: " << T_w_c.translation().transpose() << std::endl;
 
-        // --- Critical Step: Shift the "Window" ---
-        // The current frame becomes the old frame for the next iteration
+        // Shift Window
         last_frame_ = current_frame;
-        stage_ = Stage::TRACKING;
         return true;
+    } else {
+        std::cout << "[Frontend] relative pose estimation failed." << std::endl;
+        return false;
     }
-
-    return false;
 }
 
 } // namespace frontend
