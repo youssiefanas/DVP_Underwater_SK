@@ -1,0 +1,12 @@
+/**:
+  ros__parameters:
+    orb:
+      n_features: 1200
+      scale_factor: 1.2
+      n_levels: 8
+      edge_threshold: 31
+      first_level: 0
+      wta_k: 2
+      score_type: 0
+      patch_size: 31
+      fast_threshold: 20
