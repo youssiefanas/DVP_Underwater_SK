@@ -4,6 +4,8 @@
 #include <vector>
 #include <memory>
 #include <gtsam/geometry/Pose3.h>
+#include "MapPoint.hpp"
+
 namespace frontend {
 
 class Frame {
@@ -26,19 +28,23 @@ public:
     // Set extracted features (Keypoints and Descriptors)
     void setFeatures(const std::vector<cv::KeyPoint>& kps, const cv::Mat& des);
 
-    // Getters
-    size_t getId() const { return id_; }
-    double getTimestamp() const { return timestamp_; }
-    const cv::Mat& getImage() const { return image_; }
+    
+    size_t getId() const;
+    double getTimestamp() const;
+    const cv::Mat& getImage() const;
 
     // Pose Getter/Setter
-    // Pass by const reference to avoid copying
-    const gtsam::Pose3& getPose() const { return pose_; }
-    void setPose(const gtsam::Pose3& pose) { pose_ = pose; }
-    
-    // Access features (const reference to avoid copying)
-    const std::vector<cv::KeyPoint>& getKeypoints() const { return keypoints_; }
-    const cv::Mat& getDescriptors() const { return descriptors_; }
+    const gtsam::Pose3& getPose() const;
+    void setPose(const gtsam::Pose3& pose);
+
+    // Feature access
+    const std::vector<cv::KeyPoint>& getKeypoints() const;
+    const cv::Mat& getDescriptors() const;
+
+    // MapPoint access: one-to-one with keypoints_
+    const std::vector<MapPoint::Ptr>& getMapPoints() const;
+    std::vector<MapPoint::Ptr>& accessMapPoints(); // non-const access
+    void ensureMapPointVectorSized(size_t n); // keep invariant
 
 public:
     // Public Data Members (Optional: Keep public for easy access if you prefer struct-style)
@@ -60,6 +66,9 @@ private:
     // Features
     std::vector<cv::KeyPoint> keypoints_;
     cv::Mat descriptors_;
+
+    // MapPoints
+    std::vector<MapPoint::Ptr> map_points_;
 };
 
 } // namespace frontend

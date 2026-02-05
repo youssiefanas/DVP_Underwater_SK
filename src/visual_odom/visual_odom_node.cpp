@@ -40,6 +40,11 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
         "raw"
     );
     image_subscriber_ = it;
+
+    // Initialize Publisher
+    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("trajectory", 10);
+    path_msg_.header.frame_id = "map";
+
     RCLCPP_INFO(this->get_logger(), "Visual Odom Node Initialized. Listening on: %s", image_topic_subscriber.c_str());
 }
 
@@ -54,7 +59,34 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
         double timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
         // RCLCPP_INFO(this->get_logger(), "Image received. Timestamp: %f", timestamp);
-        visual_frontend_->handleImage(gray_image, timestamp);
+        if(visual_frontend_->handleImage(gray_image, timestamp)) {
+             // Retrieve latest frame and pose
+             auto frame = visual_frontend_->getLatestFrame();
+             if(frame) {
+                 gtsam::Pose3 pose = frame->getPose();
+                 
+                 geometry_msgs::msg::PoseStamped pose_msg;
+                 pose_msg.header.stamp = msg->header.stamp;
+                 pose_msg.header.frame_id = "map";
+
+                 // Translation
+                 pose_msg.pose.position.x = pose.x();
+                 pose_msg.pose.position.y = pose.y();
+                 pose_msg.pose.position.z = pose.z();
+
+                 // Rotation (Quaternion)
+                 gtsam::Quaternion q = pose.rotation().toQuaternion();
+                 pose_msg.pose.orientation.x = q.x();
+                 pose_msg.pose.orientation.y = q.y();
+                 pose_msg.pose.orientation.z = q.z();
+                 pose_msg.pose.orientation.w = q.w();
+
+                 path_msg_.header.stamp = msg->header.stamp;
+                 path_msg_.poses.push_back(pose_msg);
+
+                 path_pub_->publish(path_msg_);
+             }
+        }
     } catch (cv_bridge::Exception &e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         return;

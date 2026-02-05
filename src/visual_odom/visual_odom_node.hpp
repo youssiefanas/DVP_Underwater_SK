@@ -3,8 +3,9 @@
 #include "cv_bridge/cv_bridge.hpp"
 #include "image_transport/image_transport.hpp"
 #include "opencv2/opencv.hpp"
-#include "frontend/VisualFrontend.hpp" 
-
+#include "frontend/VisualFrontend.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 namespace visual_odom {
 class VisualOdomNode : public rclcpp::Node {
@@ -18,5 +19,9 @@ private:
     // image_transport::ImageTransport it_;
     image_transport::Subscriber image_subscriber_;
     std::shared_ptr<frontend::VisualFrontend> visual_frontend_;
+
+    // Trajectory Publisher
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+    nav_msgs::msg::Path path_msg_;
 };
 } // namespace visual_odom

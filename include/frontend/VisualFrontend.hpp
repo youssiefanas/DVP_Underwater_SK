@@ -9,6 +9,7 @@
 #include "VisualTypes.hpp"
 #include "Viewer.hpp"
 #include "PoseEstimator.hpp"
+#include "Map.hpp"
 #include <gtsam/geometry/Pose3.h>
 
 namespace frontend {
@@ -36,6 +37,8 @@ public:
     bool handleImage(const cv::Mat& image, double timestamp);
 
     bool process(Frame::Ptr current_frame);
+
+    Frame::Ptr getLatestFrame() const;
 private:
     /**
      * @brief Internal processing logic (State Machine)
@@ -52,7 +55,7 @@ private:
 
     // --- Data Management ---
     Frame::Ptr last_frame_;
-    Frame::Ptr current_frame_; // Optional: Keep track if needed elsewhere
+    Frame::Ptr current_frame_;
     
     // Feature Matcher
     std::shared_ptr<FeatureMatcher> feature_matcher_;
@@ -62,6 +65,9 @@ private:
     
     // Camera Intrinsics
     cv::Mat K_;
+
+    // Map
+    Map::Ptr map_;
 };
 
 
