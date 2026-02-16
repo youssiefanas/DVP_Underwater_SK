@@ -43,6 +43,9 @@ const cv::Mat& Frame::getDescriptors() const { return descriptors_; }
 // MapPoint accessor
 const std::vector<MapPoint::Ptr>& Frame::getMapPoints() const { return map_points_; }
 std::vector<MapPoint::Ptr>& Frame::accessMapPoints() { return map_points_; }
-void Frame::ensureMapPointVectorSized(size_t n) { map_points_.assign(n, nullptr); }
-
+void Frame::ensureMapPointVectorSized(size_t n) {
+  if (map_points_.size() < n) {
+    map_points_.resize(n, nullptr);
+  }
+}
 } // namespace frontend

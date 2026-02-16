@@ -31,7 +31,24 @@ public:
      */
     std::vector<cv::DMatch> match(Frame::Ptr frame1, Frame::Ptr frame2);
 
-private:
+    /**
+     * @brief Project MapPoints into frame using pose guess, then match by
+     * descriptor.
+     *
+     * @param frame          Current frame with keypoints and descriptors
+     * @param map_points     Local map points to project
+     * @param K              Camera intrinsics
+     * @param T_w_c          Current pose guess (world → camera)
+     * @param search_radius  Pixel radius for candidate search
+     * @return Number of successful matches (stored in frame's map_points_
+     * vector)
+     */
+    int matchByProjection(Frame::Ptr frame,
+                          const std::vector<MapPoint::Ptr> &map_points,
+                          const cv::Mat &K, const gtsam::Pose3 &T_w_c,
+                          float search_radius = 15.0f);
+
+  private:
     cv::Ptr<cv::DescriptorMatcher> matcher_;
     float ratio_thresh_;
 };

@@ -1,7 +1,6 @@
 #include "frontend/PoseEstimator.hpp"
-#include <iostream>
+#include "dv_slam/utility.hpp"
 #include <gtsam/geometry/Pose3.h> // For pose conversion if needed
-// Or just use OpenCV R, t directly and convert to GTSAM at the end
 
 namespace frontend {
 
@@ -57,14 +56,14 @@ bool PoseEstimator::triangulate(const std::vector<cv::Point2f>& points_prev,
     // convert points_4d to points_3d
     points_3d.clear();
     for (int i = 0; i < points_4d.cols; i++) {
-        cv::Point3f point(points_4d.at<float>(0, i), points_4d.at<float>(1, i), points_4d.at<float>(2, i));
-        points_3d.push_back(point);
+      float w = points_4d.at<float>(3, i);
+      if (std::abs(w) < 1e-6f)
+        continue; // degenerate point
+      cv::Point3f point(points_4d.at<float>(0, i) / w,
+                        points_4d.at<float>(1, i) / w,
+                        points_4d.at<float>(2, i) / w);
+      points_3d.push_back(point);
     }
     return true;
-    
-                                    
-                                    
-
-                                    
-                                }
+}
 }

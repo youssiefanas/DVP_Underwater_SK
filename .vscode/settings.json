@@ -1,0 +1,12 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/anas/ros-jazzy-ros1-bridge/install/ros1_bridge/lib/python3.12/site-packages",
+        "/home/anas/jazzy_ws/install/waterlinked_a50_ros_driver/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/lib/python3.12/site-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/anas/ros-jazzy-ros1-bridge/install/ros1_bridge/lib/python3.12/site-packages",
+        "/home/anas/jazzy_ws/install/waterlinked_a50_ros_driver/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/lib/python3.12/site-packages"
+    ]
+}

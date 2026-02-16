@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/anas/ros-jazzy-ros1-bridge/install/ros1_bridge/include/**",
+        "/home/anas/jazzy_ws/install/waterlinked_a50_ros_driver/include/**",
+        "/opt/ros/jazzy/include/**",
+        "/home/anas/kilted_ws/src/dv_slam/include/**",
+        "include/**",
+        "/usr/include/**"
+      ],
+      "name": "ros2",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}

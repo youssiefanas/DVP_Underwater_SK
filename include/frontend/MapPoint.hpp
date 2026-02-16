@@ -1,44 +1,63 @@
 #pragma once
 
-#include <memory>
-#include <map>
 #include <Eigen/Core>
+#include <gtsam/inference/Symbol.h>
+#include <map>
+#include <memory>
 #include <opencv2/core.hpp>
-
 namespace frontend {
-    class Frame;
 
-    class MapPoint {
-        public:
-        using Ptr = std::shared_ptr<MapPoint>;
-        using FramePtr = std::shared_ptr<Frame>;
+// Forward declarations — no circular includes
+class KeyFrame;
 
-        /**
-         * @brief Create a new MapPoint object
-         * 
-         * @param pos 
-         * @return Ptr 
-         */
-        static Ptr create(const Eigen::Vector3d& pos);
+class MapPoint {
+public:
+  using Ptr = std::shared_ptr<MapPoint>;
+  using KeyFramePtr = std::shared_ptr<KeyFrame>;
 
-        Eigen::Vector3d position_;
-        cv::Mat descriptor_;
+  /**
+   * @brief Factory method.
+   */
+  static Ptr create(const Eigen::Vector3d &pos);
 
-        std::map<FramePtr, size_t> observations_;
-        // Observations: which frames observe this point and the keypoint index in that frame
-        bool isBad_ = false;
-        
-        /**
-         * @brief Add an observation of the MapPoint in a specific frame
-         * 
-         * @param frame 
-         * @param keypoint_idx 
-         */
-        void addObservation(const FramePtr& frame, size_t keypoint_idx);
+  // --- Public data (SLAM-prototype style) ---
+  size_t id_;
+  Eigen::Vector3d position_;
+  cv::Mat descriptor_; // Representative descriptor (e.g. median of observers)
+  bool isBad_ = false;
 
-        private:
-        MapPoint(const Eigen::Vector3d& pos);
-        
+  /**
+   * @brief Observations: which KeyFrames see this point and at which keypoint
+   * index. This is the core data structure for covisibility and GTSAM
+   * projection factors.
+   */
+  std::map<KeyFramePtr, size_t> observations_;
 
-    };
+  // --- Observation management ---
+  void addObservation(const KeyFramePtr &kf, size_t keypoint_idx);
+  void removeObservation(const KeyFramePtr &kf);
+  size_t getObservationCount() const { return observations_.size(); }
+
+  /**
+   * @brief Mark this point as bad.
+   *        Should be called when reprojection error is too high or
+   *        when the point falls out of the fixed-lag smoother window.
+   */
+  void setBad();
+
+  /**
+   * @brief Compute the best representative descriptor from all observers.
+   *        Picks the descriptor with minimum median Hamming distance to all
+   * others.
+   */
+  void computeDistinctiveDescriptor();
+
+  // --- GTSAM integration ---
+  gtsam::Key getLandmarkKey() const; // gtsam::Symbol('l', id_)
+
+private:
+  MapPoint(const Eigen::Vector3d &pos, size_t id);
+  static size_t next_id_;
+};
+
 } // namespace frontend
