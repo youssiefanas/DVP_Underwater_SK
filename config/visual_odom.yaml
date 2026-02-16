@@ -1,4 +1,0 @@
-/**:
-  ros__parameters:
-    image_topic: "camera/image_raw"
-    matcher_type: "NORM_HAMMING"

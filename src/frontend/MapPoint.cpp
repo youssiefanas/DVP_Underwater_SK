@@ -1,8 +1,12 @@
 #include "frontend/MapPoint.hpp"
-#include "frontend/KeyFrame.hpp"
+
 #include <algorithm>
-#include <gtsam/inference/Symbol.h>
+#include <climits>
 #include <vector>
+
+#include <gtsam/inference/Symbol.h>
+
+#include "frontend/KeyFrame.hpp"
 
 namespace frontend {
 
@@ -59,6 +63,8 @@ void MapPoint::computeDistinctiveDescriptor() {
   }
 
   // Compute pairwise distances, pick descriptor with min median distance
+  // This ensures the descriptor is the most "central" or "representative"
+  // of the set, rejecting outliers.
   size_t N = descriptors.size();
   std::vector<std::vector<int>> distances(N, std::vector<int>(N, 0));
   for (size_t i = 0; i < N; i++) {

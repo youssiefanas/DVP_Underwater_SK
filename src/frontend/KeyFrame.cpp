@@ -1,7 +1,9 @@
 #include "frontend/KeyFrame.hpp"
-#include "frontend/Frame.hpp"
+
 #include <algorithm>
 #include <iostream>
+
+#include "frontend/Frame.hpp"
 
 namespace frontend {
 

@@ -1,9 +1,11 @@
 #pragma once
 
-#include <opencv2/core.hpp>
-#include <vector>
 #include <memory>
+#include <vector>
+
 #include <gtsam/geometry/Pose3.h>
+#include <opencv2/core.hpp>
+
 #include "MapPoint.hpp"
 
 namespace frontend {
@@ -18,7 +20,7 @@ public:
      * @brief Factory method to create a new Frame.
      * Use this instead of 'new Frame(...)' to ensure ID is auto-incremented safely.
      */
-    static Frame::Ptr createFrame(cv::Mat image, double timestamp);
+    static Frame::Ptr createFrame(const cv::Mat& image, double timestamp);
 
     // Destructor
     ~Frame() = default;

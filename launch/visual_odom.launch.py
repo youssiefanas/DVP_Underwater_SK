@@ -8,21 +8,15 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    visual_odom_config = os.path.join(
+    dv_slam_config = os.path.join(
         get_package_share_directory('dv_slam'),
         'config',
-        'visual_odom.yaml'
-    )
-    
-    orb_params_config = os.path.join(
-        get_package_share_directory('dv_slam'),
-        'config',
-        'orb_params.yaml'
+        'dv_slam.yaml'
     )
 
     image_topic_arg = DeclareLaunchArgument(
         'image_topic',
-        default_value='/camera/image_raw',
+        default_value='/camera/rgb/image_color',
         description='Topic for the image input'
     )
 
@@ -34,8 +28,7 @@ def generate_launch_description():
             name='visual_odom_node',
             output='screen',
             parameters=[
-                visual_odom_config, 
-                orb_params_config,
+                dv_slam_config,
                 {'image_topic': LaunchConfiguration('image_topic')}
             ]
         )

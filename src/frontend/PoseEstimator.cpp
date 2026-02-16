@@ -1,7 +1,9 @@
 #include "frontend/PoseEstimator.hpp"
 #include "dv_slam/utility.hpp"
 #include <gtsam/geometry/Pose3.h>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <set>
 
 namespace frontend {
@@ -34,6 +36,11 @@ bool PoseEstimator::estimate(const std::vector<cv::Point2f> &points_prev,
 }
 
 bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
+  if (!frame) {
+    if (inlier_count)
+      *inlier_count = 0;
+    return false;
+  }
   if (K_.empty()) {
     std::cerr << "[PoseEstimator] Intrinsics not set!" << std::endl;
     return false;
@@ -48,9 +55,9 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   const auto &keypoints = frame->getKeypoints();
 
   for (size_t i = 0; i < map_points.size(); i++) {
-    if (!map_points[i] || map_points[i]->isBad_)
+    if (i >= keypoints.size())
       continue;
-    if (map_points[i]->descriptor_.empty())
+    if (!map_points[i] || map_points[i]->isBad_)
       continue;
 
     const Eigen::Vector3d &position = map_points[i]->position_;
@@ -66,7 +73,7 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
     return false;
   }
 
-  // Convert current pose T_w_c to OpenCV T_c_w (camera-from-world)
+  // Convert current pose T_w_c (GTSAM) to OpenCV T_c_w (camera-from-world)
   gtsam::Pose3 T_w_c = frame->getPose();
   gtsam::Pose3 T_c_w = T_w_c.inverse();
 
@@ -127,25 +134,61 @@ bool PoseEstimator::triangulate(const std::vector<cv::Point2f> &points_prev,
                                 const cv::Mat &K, const cv::Mat &R,
                                 const cv::Mat &t,
                                 std::vector<cv::Point3f> &points_3d) {
+  points_3d.clear();
+  if (points_prev.empty() || points_prev.size() != points_curr.size()) {
+    return false;
+  }
+
+  // Construct projection matrices
+  // P1 = K * [I | 0]
   cv::Mat T1 = cv::Mat::eye(3, 4, CV_64F);
+  // P2 = K * [R | t]
   cv::Mat T2 = cv::Mat::zeros(3, 4, CV_64F);
   R.copyTo(T2(cv::Rect(0, 0, 3, 3)));
   t.copyTo(T2(cv::Rect(3, 0, 1, 3)));
   cv::Mat P1 = K * T1;
   cv::Mat P2 = K * T2;
+
   cv::Mat points_4d;
   cv::triangulatePoints(P1, P2, points_prev, points_curr, points_4d);
-
-  points_3d.clear();
-  for (int i = 0; i < points_4d.cols; i++) {
-    float w = points_4d.at<float>(3, i);
-    if (std::abs(w) < 1e-6f)
-      continue;
-    points_3d.emplace_back(points_4d.at<float>(0, i) / w,
-                           points_4d.at<float>(1, i) / w,
-                           points_4d.at<float>(2, i) / w);
+  if (points_4d.empty() || points_4d.rows != 4) {
+    return false;
   }
-  return true;
+
+  // Convert homogeneous coordinates to 3D
+  points_3d.reserve(points_4d.cols);
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  
+  for (int i = 0; i < points_4d.cols; i++) {
+    double x, y, z, w;
+    if (points_4d.type() == CV_64F) {
+      x = points_4d.at<double>(0, i);
+      y = points_4d.at<double>(1, i);
+      z = points_4d.at<double>(2, i);
+      w = points_4d.at<double>(3, i);
+    } else {
+      x = points_4d.at<float>(0, i);
+      y = points_4d.at<float>(1, i);
+      z = points_4d.at<float>(2, i);
+      w = points_4d.at<float>(3, i);
+    }
+
+    if (!std::isfinite(w) || std::abs(w) < 1e-9) {
+      points_3d.emplace_back(nan, nan, nan);
+      continue;
+    }
+
+    x /= w;
+    y /= w;
+    z /= w;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      points_3d.emplace_back(nan, nan, nan);
+      continue;
+    }
+    points_3d.emplace_back(static_cast<float>(x), static_cast<float>(y),
+                           static_cast<float>(z));
+  }
+  return !points_3d.empty();
 }
 
 } // namespace frontend

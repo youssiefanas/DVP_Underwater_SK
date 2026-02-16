@@ -1,12 +1,14 @@
 #pragma once
 
-#include "KeyFrame.hpp"
-#include "MapPoint.hpp"
 #include <memory>
-#include <opencv2/core.hpp>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <opencv2/core.hpp>
+
+#include "KeyFrame.hpp"
+#include "MapPoint.hpp"
 
 namespace frontend {
 

@@ -1,10 +1,12 @@
 #pragma once
 
-#include <Eigen/Core>
-#include <gtsam/inference/Symbol.h>
 #include <map>
 #include <memory>
+
+#include <Eigen/Core>
+#include <gtsam/inference/Symbol.h>
 #include <opencv2/core.hpp>
+
 namespace frontend {
 
 // Forward declarations — no circular includes

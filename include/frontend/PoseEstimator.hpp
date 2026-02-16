@@ -1,8 +1,10 @@
 #pragma once
 
-#include "Frame.hpp"
-#include <opencv2/opencv.hpp>
 #include <vector>
+
+#include <opencv2/opencv.hpp>
+
+#include "Frame.hpp"
 
 namespace frontend {
 

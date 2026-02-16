@@ -1,12 +1,14 @@
 #pragma once
 
-#include "MapPoint.hpp"
-#include <gtsam/geometry/Pose3.h>
-#include <gtsam/inference/Symbol.h>
 #include <memory>
-#include <opencv2/core.hpp>
 #include <set>
 #include <vector>
+
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/inference/Symbol.h>
+#include <opencv2/core.hpp>
+
+#include "MapPoint.hpp"
 
 namespace frontend {
 

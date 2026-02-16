@@ -1,5 +1,7 @@
 #include "frontend/FeatureExtractor.hpp"    
+
 #include <iostream>
+
 namespace frontend {
 
 FeatureExtractor::FeatureExtractor(const ORBParams& params) {
@@ -15,10 +17,19 @@ FeatureExtractor::FeatureExtractor(const ORBParams& params) {
         params.patch_size,
         params.fast_threshold
     ); 
-    std::cout<<"ORB initialized with parameters: "<<params.n_features<<std::endl;
+    std::cout << "ORB initialized with parameters: " << params.n_features << std::endl;
 }
 
 void FeatureExtractor::extract(Frame& frame) {
+    if (!orb_) {
+        frame.setFeatures({}, cv::Mat());
+        return;
+    }
+    if (frame.getImage().empty()) {
+        frame.setFeatures({}, cv::Mat());
+        return;
+    }
+
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
 
@@ -27,9 +38,6 @@ void FeatureExtractor::extract(Frame& frame) {
 
     // Store in Frame
     frame.setFeatures(keypoints, descriptors);
-
-    // Debug: Print number of features found
-    // std::cout << "[FeatureExtractor] Extracted " << keypoints.size() << " features from Frame " << frame.getId() << std::endl;
 }
 
 } // namespace frontend

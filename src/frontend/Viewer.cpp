@@ -1,4 +1,5 @@
 #include "frontend/Viewer.hpp"
+
 #include <chrono>
 
 namespace frontend {

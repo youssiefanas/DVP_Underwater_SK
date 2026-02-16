@@ -1,10 +1,12 @@
 #pragma once
 
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
+
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
+
 #include "Frame.hpp"
 
 namespace frontend {

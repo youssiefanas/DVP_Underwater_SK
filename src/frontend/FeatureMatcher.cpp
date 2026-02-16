@@ -44,6 +44,12 @@ std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr fram
 int FeatureMatcher::matchByProjection(
     Frame::Ptr frame, const std::vector<MapPoint::Ptr> &map_points,
     const cv::Mat &K, const gtsam::Pose3 &T_w_c, float search_radius) {
+  if (!frame || frame->getDescriptors().empty() || frame->getKeypoints().empty() ||
+      K.empty()) {
+    return 0;
+  }
+  frame->ensureMapPointVectorSized(frame->getKeypoints().size());
+
   int matches = 0;
   gtsam::Pose3 T_c_w = T_w_c.inverse();
 
@@ -82,6 +88,9 @@ int FeatureMatcher::matchByProjection(
     int second_best_dist = 256;
 
     for (size_t j = 0; j < keypoints.size(); j++) {
+      if (j >= frame->accessMapPoints().size()) {
+        continue;
+      }
       if (frame->accessMapPoints()[j])
         continue; // Already matched
 
