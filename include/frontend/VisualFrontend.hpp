@@ -62,6 +62,23 @@ public:
     bool track(Frame::Ptr current_frame);
 
     /**
+     * @brief Try tracking with projection matching + PnP.
+     * @return true if enough MapPoints were matched and PnP succeeded.
+     */
+    bool trackWithLocalMap(Frame::Ptr current_frame);
+
+    /**
+     * @brief Fallback: Essential matrix-based tracking (frame-to-frame).
+     * @return true if succeeded.
+     */
+    bool trackWithEssential(Frame::Ptr current_frame);
+
+    /**
+     * @brief Predict the current frame's pose using constant velocity model.
+     */
+    void predictPose(Frame::Ptr current_frame);
+
+    /**
      * @brief Decide whether the current frame should be promoted to KeyFrame.
      */
     bool shouldInsertKeyFrame(Frame::Ptr current_frame) const;
@@ -107,12 +124,22 @@ public:
     // --- Map ---
     Map::Ptr map_;
 
+    // --- Velocity model (for pose prediction) ---
+    gtsam::Pose3 velocity_; // T_{k-1, k} relative transform
+    bool has_velocity_ = false;
+
     // --- KeyFrame insertion parameters ---
+    // TODO: tune these for underwater scenarios
+    // TODO: add to config file
     int frames_since_last_kf_ = 0;
     static constexpr int kMinFramesBetweenKF = 5;   // Don't insert KF too fast
     static constexpr int kMinTrackedMapPoints = 50; // If below this → force KF
     static constexpr double kMinBaseline = 0.15; // meters (tune for underwater)
     static constexpr double kMinRotationDeg = 10.0; // degrees
+    // --- Projection matching parameters ---
+    static constexpr int kMinProjectionMatches = 20; // Min matches to trust PnP
+    static constexpr float kSearchRadius = 25.0f;    // pixels
+    static constexpr float kSearchRadiusWide = 50.0f; // fallback wider search
 };
 
 } // namespace frontend

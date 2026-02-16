@@ -1,9 +1,8 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include "Frame.hpp"
 #include <opencv2/opencv.hpp>
 #include <vector>
-#include "Frame.hpp" // Added dependency
 
 namespace frontend {
 
@@ -13,6 +12,11 @@ public:
 
     PoseEstimator();
     ~PoseEstimator() = default;
+    /**
+     * @brief Store camera intrinsics for PnP.
+     *        Must be called once during VisualFrontend construction.
+     */
+    void setIntrinsics(const cv::Mat &K);
 
     /**
      * @brief Estimate relative pose (R, t) between two sets of matched points.
@@ -33,31 +37,31 @@ public:
                   cv::Mat& mask);
 
     /**
-     * @brief Refine pose using PnP with MapPoint observations.
-     * Phase 2: Local Refinement.
-     * 
-     * @param frame Frame with observations and initial pose guess.
-     * @return true if refinement successful (enough inliers).
+     * @brief Refine pose using PnP with MapPoint observations (3D-2D).
+     *        Reads the frame's MapPoint associations, builds 3D-2D
+     * correspondences, runs solvePnPRansac with the frame's current pose as
+     * initial guess. On success, updates the frame's pose and removes outlier
+     * associations.
+     *
+     * @param frame     Frame with MapPoint associations and an initial pose
+     * guess.
+     * @param n_inliers Output: number of PnP inliers (optional, can be
+     * nullptr).
+     * @return true if PnP succeeded with enough inliers.
      */
-    bool estimateRefined(Frame::Ptr frame);
+    bool estimateRefined(Frame::Ptr frame, int *n_inliers = nullptr);
 
     /**
-     * @brief Triangulate 3D points from relative pose.
-     * 
-     * @param pts_prev Points in previous frame
-     * @param pts_curr Points in current frame
-     * @param R Relative rotation
-     * @param t Relative translation
-     * @param K Camera intrinsics
-     * @param points_3d Output 3D points
-     * @return true
+     * @brief Triangulate 3D points from two sets of 2D correspondences.
      */
-    bool triangulate(const std::vector<cv::Point2f>& pts_prev,
-                     const std::vector<cv::Point2f>& pts_curr,
-                     const cv::Mat& R,
-                     const cv::Mat& t,
-                     const cv::Mat& K,
-                     std::vector<cv::Point3f>& points_3d);
+    bool triangulate(const std::vector<cv::Point2f> &pts_prev,
+                     const std::vector<cv::Point2f> &pts_curr, const cv::Mat &K,
+                     const cv::Mat &R, const cv::Mat &t,
+                     std::vector<cv::Point3f> &points_3d);
+
+  private:
+    cv::Mat K_;           // Camera intrinsics (set once)
+    cv::Mat dist_coeffs_; // Distortion (empty = no distortion)
 };
 
 } // namespace frontend

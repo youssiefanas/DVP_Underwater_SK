@@ -49,48 +49,39 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
 }
 
 void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg) {
-    try {
-        // TODO : check if the image is in bgr8 format or grayscale format 
-        // get the image format from the yaml file
-        
-        cv::Mat bgr_image = cv_bridge::toCvShare(msg, "bgr8")->image;
-        cv::Mat gray_image;
-        cv::cvtColor(bgr_image, gray_image, cv::COLOR_BGR2GRAY);
-        double timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
+  try {
+    cv::Mat bgr_image = cv_bridge::toCvShare(msg, "bgr8")->image;
+    cv::Mat gray_image;
+    cv::cvtColor(bgr_image, gray_image, cv::COLOR_BGR2GRAY);
+    double timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
-        // RCLCPP_INFO(this->get_logger(), "Image received. Timestamp: %f", timestamp);
-        if(visual_frontend_->handleImage(gray_image, timestamp)) {
-             // Retrieve latest frame and pose
-             auto frame = visual_frontend_->getLatestFrame();
-             if(frame) {
-                 gtsam::Pose3 pose = frame->getPose();
-                 
-                 geometry_msgs::msg::PoseStamped pose_msg;
-                 pose_msg.header.stamp = msg->header.stamp;
-                 pose_msg.header.frame_id = "map";
+    if (visual_frontend_->handleImage(gray_image, timestamp)) {
+      auto frame = visual_frontend_->getLatestFrame();
+      if (frame) {
+        gtsam::Pose3 pose = frame->getPose();
 
-                 // Translation
-                 pose_msg.pose.position.x = pose.x();
-                 pose_msg.pose.position.y = pose.y();
-                 pose_msg.pose.position.z = pose.z();
+        geometry_msgs::msg::PoseStamped pose_msg;
+        pose_msg.header.stamp = msg->header.stamp;
+        pose_msg.header.frame_id = "map";
 
-                 // Rotation (Quaternion)
-                 gtsam::Quaternion q = pose.rotation().toQuaternion();
-                 pose_msg.pose.orientation.x = q.x();
-                 pose_msg.pose.orientation.y = q.y();
-                 pose_msg.pose.orientation.z = q.z();
-                 pose_msg.pose.orientation.w = q.w();
+        pose_msg.pose.position.x = pose.x();
+        pose_msg.pose.position.y = pose.y();
+        pose_msg.pose.position.z = pose.z();
 
-                 path_msg_.header.stamp = msg->header.stamp;
-                 path_msg_.poses.push_back(pose_msg);
+        gtsam::Quaternion q = pose.rotation().toQuaternion();
+        pose_msg.pose.orientation.x = q.x();
+        pose_msg.pose.orientation.y = q.y();
+        pose_msg.pose.orientation.z = q.z();
+        pose_msg.pose.orientation.w = q.w();
 
-                 path_pub_->publish(path_msg_);
-             }
-        }
-    } catch (cv_bridge::Exception &e) {
-        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-        return;
+        path_msg_.header.stamp = msg->header.stamp;
+        path_msg_.poses.push_back(pose_msg);
+        path_pub_->publish(path_msg_);
+      }
     }
+  } catch (const cv_bridge::Exception &e) {
+    RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+  }
 }
 
 }

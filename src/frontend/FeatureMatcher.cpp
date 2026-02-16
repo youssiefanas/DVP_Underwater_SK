@@ -4,27 +4,26 @@
 
 namespace frontend {
 
-FeatureMatcher::FeatureMatcher(const std::string& matcher_type, float ratio_thresh) 
+FeatureMatcher::FeatureMatcher(const std::string &matcher_type,
+                               float ratio_thresh)
     : ratio_thresh_(ratio_thresh) {
-    
-    if (matcher_type == "NORM_L2") {
-        matcher_ = cv::DescriptorMatcher::create("BruteForce");
-    } else {
-        matcher_ = cv::DescriptorMatcher::create("BruteForce-Hamming");
-    }
+
+  if (matcher_type == "NORM_L2") {
+    matcher_ = cv::DescriptorMatcher::create("BruteForce");
+  } else {
+    matcher_ = cv::DescriptorMatcher::create("BruteForce-Hamming");
+  }
 }
 
 std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr frame2) {
     std::vector<cv::DMatch> good_matches;
-    
-    // Check if frames exist and have descriptors
+
     if (!frame1 || !frame2 || frame1->getDescriptors().empty() || frame2->getDescriptors().empty()) {
         return good_matches;
     }
 
     std::vector<std::vector<cv::DMatch>> knn_matches;
-    
-    // k = 2 for Ratio Test
+
     try {
         matcher_->knnMatch(frame1->getDescriptors(), frame2->getDescriptors(), knn_matches, 2);
     } catch (const cv::Exception& e) {
@@ -32,10 +31,9 @@ std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr fram
         return good_matches;
     }
 
-    // Apply Lowe's Ratio Test
     for (size_t i = 0; i < knn_matches.size(); i++) {
         if (knn_matches[i].size() < 2) continue;
-        
+
         if (knn_matches[i][0].distance < ratio_thresh_ * knn_matches[i][1].distance) {
             good_matches.push_back(knn_matches[i][0]);
         }
@@ -51,52 +49,71 @@ int FeatureMatcher::matchByProjection(
 
   double fx = K.at<double>(0, 0), fy = K.at<double>(1, 1);
   double cx = K.at<double>(0, 2), cy = K.at<double>(1, 2);
+  int img_cols = frame->getImage().cols;
+  int img_rows = frame->getImage().rows;
+
+  const float search_r2 = search_radius * search_radius;
+  const int kMaxHammingDist = 50; // Absolute threshold
+  const auto &keypoints = frame->getKeypoints();
+  const cv::Mat &descriptors = frame->getDescriptors();
 
   for (const auto &mp : map_points) {
     if (!mp || mp->isBad_)
       continue;
+    if (mp->descriptor_.empty())
+      continue; // Guard: need a descriptor to match
 
     // 1. Transform to camera frame
     gtsam::Point3 p_cam = T_c_w.transformFrom(gtsam::Point3(mp->position_));
-    if (p_cam.z() <= 0.0)
-      continue; // Behind camera
+    if (p_cam.z() <= 0.1)
+      continue; // Behind camera or too close
 
     // 2. Project to image
     double u = fx * p_cam.x() / p_cam.z() + cx;
     double v = fy * p_cam.y() / p_cam.z() + cy;
 
-    // 3. Check bounds
-    if (u < 0 || u >= frame->getImage().cols || v < 0 ||
-        v >= frame->getImage().rows)
+    // 3. Check bounds (with margin)
+    if (u < 0 || u >= img_cols || v < 0 || v >= img_rows)
       continue;
 
-    // 4. Find best keypoint within search_radius
+    // 4. Find best AND second-best keypoint within search_radius
     int best_idx = -1;
-    int best_dist = 256; // Max Hamming distance for ORB
-    for (size_t j = 0; j < frame->getKeypoints().size(); j++) {
+    int best_dist = 256;
+    int second_best_dist = 256;
+
+    for (size_t j = 0; j < keypoints.size(); j++) {
       if (frame->accessMapPoints()[j])
         continue; // Already matched
 
-      const cv::KeyPoint &kp = frame->getKeypoints()[j];
+      const cv::KeyPoint &kp = keypoints[j];
       float dx = kp.pt.x - (float)u;
       float dy = kp.pt.y - (float)v;
-      if (dx * dx + dy * dy > search_radius * search_radius)
+      if (dx * dx + dy * dy > search_r2)
         continue;
 
-      int dist = cv::norm(mp->descriptor_, frame->getDescriptors().row((int)j),
-                          cv::NORM_HAMMING);
+      int dist =
+          cv::norm(mp->descriptor_, descriptors.row((int)j), cv::NORM_HAMMING);
       if (dist < best_dist) {
+        second_best_dist = best_dist;
         best_dist = dist;
         best_idx = (int)j;
+      } else if (dist < second_best_dist) {
+        second_best_dist = dist;
       }
     }
 
-    // 5. Accept match if good enough
-    if (best_idx >= 0 && best_dist < 50) { // Hamming threshold
+    // 5. Accept match: absolute threshold + ratio test vs second best
+    if (best_idx >= 0 && best_dist < kMaxHammingDist) {
+      // If there's a second candidate, require ratio test
+      if (second_best_dist < 256) {
+        if ((float)best_dist > 0.8f * (float)second_best_dist)
+          continue; // Ambiguous match
+      }
       frame->accessMapPoints()[best_idx] = mp;
       matches++;
     }
   }
   return matches;
 }
-}
+
+} // namespace frontend

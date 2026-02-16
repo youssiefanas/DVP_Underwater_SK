@@ -95,12 +95,16 @@ std::vector<KeyFrame::Ptr> KeyFrame::getAllCovisibles() const {
 }
 void KeyFrame::syncMapPointsToFrame(std::shared_ptr<Frame> frame) const {
     if (!frame) return;
+    // Make sure the vector is large enough
     frame->ensureMapPointVectorSized(frame->getKeypoints().size());
+
     size_t limit = std::min(map_points_.size(), frame->getMapPoints().size());
     for (size_t i = 0; i < limit; i++) {
-        if (map_points_[i] && !map_points_[i]->isBad_) {
-            frame->accessMapPoints()[i] = map_points_[i];
-        }
+      // Overwrite even if frame already has something at this index,
+      // because the KeyFrame's version is authoritative after triangulation
+      if (map_points_[i] && !map_points_[i]->isBad_) {
+        frame->accessMapPoints()[i] = map_points_[i];
+      }
     }
 }
 
