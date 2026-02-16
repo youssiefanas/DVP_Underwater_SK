@@ -79,6 +79,7 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
         path_pub_->publish(path_msg_);
       }
     }
+
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
   }

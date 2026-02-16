@@ -9,9 +9,11 @@
 #include "Viewer.hpp"
 #include "VisualTypes.hpp"
 #include <gtsam/geometry/Pose3.h>
+#include <gtsam/inference/Symbol.h>
 #include <memory>
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
+#include <optional>
 
 namespace frontend {
 
@@ -27,7 +29,15 @@ enum class Stage {
   INITIALIZING, // Have one frame, waiting for second with enough baseline
   TRACKING
 };
-
+struct FrontendOutput {
+  gtsam::Key previous_key;
+  gtsam::Key current_key;
+  gtsam::Pose3 relative_pose;    // T_{prev}^{-1} * T_{curr}
+  gtsam::Pose3 initial_estimate; // World pose of current KF
+  double timestamp;
+  bool is_first_keyframe = false; // If true, add prior instead of between
+  gtsam::Pose3 prior_pose;        // Only used if is_first_keyframe
+};
 class VisualFrontend {
 public:
     using Ptr = std::shared_ptr<VisualFrontend>;
@@ -42,6 +52,7 @@ public:
     Frame::Ptr getLatestFrame() const;
     KeyFrame::Ptr getLatestKeyFrame() const;
     Map::Ptr getMap() const { return map_; }
+    std::optional<FrontendOutput> consumeBackendOutput();
 
   private:
     // --- Internal pipeline stages ---
@@ -127,6 +138,10 @@ public:
     // --- Velocity model (for pose prediction) ---
     gtsam::Pose3 velocity_; // T_{k-1, k} relative transform
     bool has_velocity_ = false;
+    int consecutive_failures_ = 0;
+
+    /// Pending output for the backend (consumed by vo_node)
+    std::optional<FrontendOutput> pending_output_;
 
     // --- KeyFrame insertion parameters ---
     // TODO: tune these for underwater scenarios
@@ -140,6 +155,7 @@ public:
     static constexpr int kMinProjectionMatches = 20; // Min matches to trust PnP
     static constexpr float kSearchRadius = 25.0f;    // pixels
     static constexpr float kSearchRadiusWide = 50.0f; // fallback wider search
+    static constexpr int kMaxConsecutiveFailures = 10;
 };
 
 } // namespace frontend

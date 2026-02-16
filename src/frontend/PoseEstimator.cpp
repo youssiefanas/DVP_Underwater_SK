@@ -2,6 +2,7 @@
 #include "dv_slam/utility.hpp"
 #include <gtsam/geometry/Pose3.h>
 #include <iostream>
+#include <set>
 
 namespace frontend {
 
@@ -9,7 +10,7 @@ PoseEstimator::PoseEstimator() {}
 
 void PoseEstimator::setIntrinsics(const cv::Mat &K) {
   K_ = K.clone();
-  dist_coeffs_ = cv::Mat::zeros(4, 1, CV_64F); // No distortion
+  dist_coeffs_ = cv::Mat::zeros(4, 1, CV_64F);
 }
 
 bool PoseEstimator::estimate(const std::vector<cv::Point2f> &points_prev,
@@ -25,34 +26,23 @@ bool PoseEstimator::estimate(const std::vector<cv::Point2f> &points_prev,
 
   cv::Mat E = cv::findEssentialMat(points_prev, points_curr, focal, pp,
                                    cv::RANSAC, 0.999, 1.0, mask);
-  if (E.empty()) {
+  if (E.empty())
     return false;
-  }
 
   int inliers = cv::recoverPose(E, points_prev, points_curr, K, R, t, mask);
-
-  if (inliers < 5) {
-    return false;
-  }
-
-  return true;
+  return (inliers >= 5);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// estimateRefined: PnP pose from 3D MapPoints → 2D keypoints
-// ─────────────────────────────────────────────────────────────────
-bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *n_inliers) {
+bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   if (K_.empty()) {
-    std::cerr
-        << "[PoseEstimator] Intrinsics not set! Call setIntrinsics() first."
-        << std::endl;
+    std::cerr << "[PoseEstimator] Intrinsics not set!" << std::endl;
     return false;
   }
 
-  // ── 1. Build 3D-2D correspondences from frame's MapPoint associations ──
-  std::vector<cv::Point3f> object_points; // 3D world coordinates
-  std::vector<cv::Point2f> image_points;  // 2D pixel coordinates
-  std::vector<size_t> kp_indices; // Which keypoint index each pair came from
+  // Build 3D-2D correspondences from frame's MapPoint associations
+  std::vector<cv::Point3f> object_points;
+  std::vector<cv::Point2f> image_points;
+  std::vector<size_t> keypoint_indices;
 
   const auto &map_points = frame->getMapPoints();
   const auto &keypoints = frame->getKeypoints();
@@ -60,19 +50,23 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *n_inliers) {
   for (size_t i = 0; i < map_points.size(); i++) {
     if (!map_points[i] || map_points[i]->isBad_)
       continue;
+    if (map_points[i]->descriptor_.empty())
+      continue;
 
-    const Eigen::Vector3d &pos = map_points[i]->position_;
-    object_points.emplace_back((float)pos.x(), (float)pos.y(), (float)pos.z());
+    const Eigen::Vector3d &position = map_points[i]->position_;
+    object_points.emplace_back((float)position.x(), (float)position.y(),
+                               (float)position.z());
     image_points.push_back(keypoints[i].pt);
-    kp_indices.push_back(i);
+    keypoint_indices.push_back(i);
   }
 
-  // Need minimum 10 correspondences for robust PnP
   if (object_points.size() < 10) {
+    if (inlier_count)
+      *inlier_count = 0;
     return false;
   }
 
-  // ── 2. Convert current pose (T_w_c) to OpenCV camera-from-world (T_c_w) ──
+  // Convert current pose T_w_c to OpenCV T_c_w (camera-from-world)
   gtsam::Pose3 T_w_c = frame->getPose();
   gtsam::Pose3 T_c_w = T_w_c.inverse();
 
@@ -90,46 +84,39 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *n_inliers) {
   cv::Mat rvec;
   cv::Rodrigues(R_cv, rvec);
 
-  // ── 3. Solve PnP with RANSAC ──
+  // solvePnPRansac with initial guess
   cv::Mat inlier_indices;
-  bool success = cv::solvePnPRansac(
-      object_points, image_points, K_, dist_coeffs_, rvec, t_cv,
-      true, // useExtrinsicGuess — use our initial pose
-      200,  // iterationsCount
-      4.0,  // reprojectionError threshold (pixels)
-      0.99, // confidence
-      inlier_indices, cv::SOLVEPNP_ITERATIVE);
+  bool success = cv::solvePnPRansac(object_points, image_points, K_,
+                                    dist_coeffs_, rvec, t_cv,
+                                    true, // useExtrinsicGuess
+                                    200,  // iterations
+                                    4.0,  // reprojection threshold (pixels)
+                                    0.99, // confidence
+                                    inlier_indices, cv::SOLVEPNP_ITERATIVE);
 
-  if (!success || inlier_indices.rows < 10) {
-    if (n_inliers)
-      *n_inliers = inlier_indices.empty() ? 0 : inlier_indices.rows;
+  int n_inliers = inlier_indices.empty() ? 0 : inlier_indices.rows;
+  if (inlier_count)
+    *inlier_count = n_inliers;
+
+  if (!success || n_inliers < 10) {
     return false;
   }
 
-  if (n_inliers)
-    *n_inliers = inlier_indices.rows;
-
-  // ── 4. Remove outlier MapPoint associations ──
+  // Remove outlier MapPoint associations
   std::set<int> inlier_set;
   for (int i = 0; i < inlier_indices.rows; i++) {
     inlier_set.insert(inlier_indices.at<int>(i));
   }
-
-  for (size_t i = 0; i < kp_indices.size(); i++) {
+  for (size_t i = 0; i < keypoint_indices.size(); i++) {
     if (inlier_set.find((int)i) == inlier_set.end()) {
-      // This correspondence was an outlier → remove MapPoint association
-      frame->accessMapPoints()[kp_indices[i]] = nullptr;
+      frame->accessMapPoints()[keypoint_indices[i]] = nullptr;
     }
   }
 
-  // ── 5. Convert refined pose back to GTSAM (world-from-camera) ──
+  // Convert refined pose back: T_c_w → T_w_c
   cv::Mat R_refined;
   cv::Rodrigues(rvec, R_refined);
-
-  // Build T_c_w from OpenCV result
   gtsam::Pose3 T_c_w_refined = cvToGtsam(R_refined, t_cv);
-
-  // Store T_w_c
   frame->setPose(T_c_w_refined.inverse());
 
   return true;
@@ -154,10 +141,9 @@ bool PoseEstimator::triangulate(const std::vector<cv::Point2f> &points_prev,
     float w = points_4d.at<float>(3, i);
     if (std::abs(w) < 1e-6f)
       continue;
-    cv::Point3f point(points_4d.at<float>(0, i) / w,
-                      points_4d.at<float>(1, i) / w,
-                      points_4d.at<float>(2, i) / w);
-    points_3d.push_back(point);
+    points_3d.emplace_back(points_4d.at<float>(0, i) / w,
+                           points_4d.at<float>(1, i) / w,
+                           points_4d.at<float>(2, i) / w);
   }
   return true;
 }
