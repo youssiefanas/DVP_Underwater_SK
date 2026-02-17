@@ -96,8 +96,8 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   bool success = cv::solvePnPRansac(object_points, image_points, K_,
                                     dist_coeffs_, rvec, t_cv,
                                     true, // useExtrinsicGuess
-                                    200,  // iterations
-                                    4.0,  // reprojection threshold (pixels)
+                                    500,  // iterations
+                                    6.0,  // reprojection threshold (pixels)
                                     0.99, // confidence
                                     inlier_indices, cv::SOLVEPNP_ITERATIVE);
 

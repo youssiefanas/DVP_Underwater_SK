@@ -160,21 +160,32 @@ private:
     // Potential Future Work: Move these to a config file.
     int frames_since_last_kf_ = 0;
     static constexpr int kMinFramesBetweenKF = 5;    // Don't insert KF too fast
-    static constexpr int kMinInitMapPoints = 40;     // Reject weak initialization
-    static constexpr int kMinTrackedMapPoints = 50;  // If below this → force KF
+    // static constexpr int kMinInitMapPoints = 40;     // Reject weak
+    // initialization static constexpr int kMinTrackedMapPoints = 50;  // If
+    // below this → force KF
     static constexpr double kMinBaseline = 0.15;     // meters
     static constexpr double kMinRotationDeg = 10.0;  // degrees
 
     // --- Projection matching parameters ---
-    static constexpr int kMinProjectionMatches = 20; // Min matches to trust PnP
-    static constexpr int kMinPnPInliers = 25;        // Reject weak PnP solutions
-    static constexpr int kStrongPnPInliers = 80;     // Allow larger motion if very strong
-    static constexpr float kSearchRadius = 25.0f;    // pixels
-    static constexpr float kSearchRadiusWide = 50.0f;// fallback wider search
-    static constexpr int kMinTrackedForNewKF = 35;   // Avoid weak keyframe insertion
+    // static constexpr int kMinProjectionMatches = 20; // Min matches to trust
+    // PnP static constexpr int kMinPnPInliers = 25;        // Reject weak PnP
+    // solutions static constexpr int kStrongPnPInliers = 80;     // Allow
+    // larger motion if very strong static constexpr float kSearchRadius
+    // = 25.0f;    // pixels static constexpr float kSearchRadiusWide = 50.0f;//
+    // fallback wider search static constexpr int kMinTrackedForNewKF = 35;   //
+    // Avoid weak keyframe insertion
     static constexpr double kMaxPoseJumpTranslation = 0.20; // meters (map scale)
     static constexpr double kMaxPoseJumpRotationDeg = 12.0; // degrees
     static constexpr int kMaxConsecutiveFailures = 10;
+
+    static constexpr int kMinInitMapPoints = 25;      // was 40
+    static constexpr int kMinTrackedMapPoints = 30;   // was 50
+    static constexpr int kMinProjectionMatches = 12;  // was 20
+    static constexpr int kMinPnPInliers = 15;         // was 25
+    static constexpr int kStrongPnPInliers = 50;      // was 80
+    static constexpr float kSearchRadius = 40.0f;     // was 25.0f
+    static constexpr float kSearchRadiusWide = 80.0f; // was 50.0f
+    static constexpr int kMinTrackedForNewKF = 20;    // was 35
 };
 
 } // namespace frontend

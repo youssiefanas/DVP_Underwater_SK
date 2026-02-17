@@ -59,7 +59,7 @@ int FeatureMatcher::matchByProjection(
   int img_rows = frame->getImage().rows;
 
   const float search_r2 = search_radius * search_radius;
-  const int kMaxHammingDist = 50; // Absolute threshold
+  const int kMaxHammingDist = 80; // Absolute threshold
   const auto &keypoints = frame->getKeypoints();
   const cv::Mat &descriptors = frame->getDescriptors();
 
@@ -115,7 +115,7 @@ int FeatureMatcher::matchByProjection(
     if (best_idx >= 0 && best_dist < kMaxHammingDist) {
       // If there's a second candidate, require ratio test
       if (second_best_dist < 256) {
-        if ((float)best_dist > 0.8f * (float)second_best_dist)
+        if ((float)best_dist > 0.9f * (float)second_best_dist)
           continue; // Ambiguous match
       }
       frame->accessMapPoints()[best_idx] = mp;

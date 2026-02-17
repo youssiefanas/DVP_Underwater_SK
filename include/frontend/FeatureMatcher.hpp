@@ -21,7 +21,7 @@ public:
      * @param matcher_type "NORM_HAMMING" or "NORM_L2"
      * @param ratio_thresh Ratio test threshold (default 0.7)
      */
-    FeatureMatcher(const std::string &matcher_type, float ratio_thresh = 0.4f);
+    FeatureMatcher(const std::string &matcher_type, float ratio_thresh = 0.75f);
     ~FeatureMatcher() = default;
 
     /**
