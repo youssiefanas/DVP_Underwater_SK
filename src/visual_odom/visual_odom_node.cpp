@@ -1,7 +1,9 @@
 #include "visual_odom_node.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <opencv2/calib3d.hpp>
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -56,20 +58,59 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
     double cx = this->declare_parameter("Camera.cx", 489.02536042247897);
     double cy = this->declare_parameter("Camera.cy", 305.38727712002805);
 
+    std::string camera_model = this->declare_parameter("Camera.model", "pinhole");
+    std::transform(camera_model.begin(), camera_model.end(), camera_model.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (camera_model == "fisheye" || camera_model == "equidistant") {
+      camera_model_ = CameraModel::kFisheye;
+    } else {
+      if (camera_model != "pinhole") {
+        RCLCPP_WARN(this->get_logger(),
+                    "Unknown Camera.model='%s'. Falling back to 'pinhole'.",
+                    camera_model.c_str());
+      }
+      camera_model_ = CameraModel::kPinhole;
+    }
+
     double k1 = this->declare_parameter("Camera.k1", 0.0);
     double k2 = this->declare_parameter("Camera.k2", 0.0);
     double p1 = this->declare_parameter("Camera.p1", 0.0);
     double p2 = this->declare_parameter("Camera.p2", 0.0);
     double k3 = this->declare_parameter("Camera.k3", 0.0);
+    double k4 = this->declare_parameter("Camera.k4", 0.0);
     use_undistort_ = this->declare_parameter("Camera.undistort", true);
+    const int image_width = this->declare_parameter("Camera.width", 0);
+    const int image_height = this->declare_parameter("Camera.height", 0);
 
     K_ = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
-    dist_coeffs_ = (cv::Mat_<double>(5, 1) << k1, k2, p1, p2, k3);
-
-    bool has_distortion = std::abs(k1) > 1e-12 || std::abs(k2) > 1e-12 ||
-                          std::abs(p1) > 1e-12 || std::abs(p2) > 1e-12 ||
-                          std::abs(k3) > 1e-12;
+    bool has_distortion = false;
+    if (camera_model_ == CameraModel::kFisheye) {
+      dist_coeffs_ = (cv::Mat_<double>(4, 1) << k1, k2, k3, k4);
+      has_distortion = std::abs(k1) > 1e-12 || std::abs(k2) > 1e-12 ||
+                       std::abs(k3) > 1e-12 || std::abs(k4) > 1e-12;
+      if (std::abs(p1) > 1e-12 || std::abs(p2) > 1e-12) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Ignoring Camera.p1/p2 for fisheye model (equidistant "
+                    "uses k1..k4 only).");
+      }
+    } else {
+      dist_coeffs_ = (cv::Mat_<double>(5, 1) << k1, k2, p1, p2, k3);
+      has_distortion = std::abs(k1) > 1e-12 || std::abs(k2) > 1e-12 ||
+                       std::abs(p1) > 1e-12 || std::abs(p2) > 1e-12 ||
+                       std::abs(k3) > 1e-12;
+      if (std::abs(k4) > 1e-12) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Ignoring Camera.k4 for pinhole model.");
+      }
+    }
     use_undistort_ = use_undistort_ && has_distortion;
+    if (use_undistort_ && image_width > 0 && image_height > 0) {
+      maybeBuildUndistortMaps(cv::Size(image_width, image_height));
+    } else if (use_undistort_ && (image_width <= 0 || image_height <= 0)) {
+      RCLCPP_INFO(this->get_logger(),
+                  "Camera.width/height not set. Undistortion maps will be "
+                  "initialized from the first image frame.");
+    }
 
     save_tum_trajectory_ =
         this->declare_parameter("output.save_tum_trajectory", true);
@@ -110,9 +151,10 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
     RCLCPP_INFO(
         this->get_logger(),
         "Visual Odom Node Initialized. topic=%s | mono.init_scale=%.3f | "
-        "undistort=%s | viewer=%s | tum_log=%s | cv_seed=%d | "
+        "camera.model=%s | undistort=%s | viewer=%s | tum_log=%s | cv_seed=%d | "
         "cv_threads=%d | queue=%d | qos=%s",
         image_topic_subscriber.c_str(), init_scale,
+        camera_model_ == CameraModel::kFisheye ? "fisheye" : "pinhole",
         use_undistort_ ? "true" : "false",
         enable_viewer_ ? "true" : "false",
         save_tum_trajectory_ ? tum_trajectory_path_.c_str() : "disabled",
@@ -131,7 +173,9 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
 
     cv::Mat frontend_image;
     if (use_undistort_) {
-      cv::undistort(gray_image, frontend_image, K_, dist_coeffs_);
+      maybeBuildUndistortMaps(gray_image.size());
+      cv::remap(gray_image, frontend_image, undistort_map1_, undistort_map2_,
+                cv::INTER_LINEAR);
     } else {
       frontend_image = gray_image;
     }
@@ -166,6 +210,29 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
   }
+}
+
+void VisualOdomNode::maybeBuildUndistortMaps(const cv::Size& image_size) {
+  if (!use_undistort_) {
+    return;
+  }
+  if (image_size.width <= 0 || image_size.height <= 0) {
+    return;
+  }
+  if (!undistort_map1_.empty() && !undistort_map2_.empty() &&
+      undistort_map_size_ == image_size) {
+    return;
+  }
+
+  if (camera_model_ == CameraModel::kFisheye) {
+    cv::fisheye::initUndistortRectifyMap(
+        K_, dist_coeffs_, cv::Mat::eye(3, 3, CV_64F), K_, image_size,
+        CV_16SC2, undistort_map1_, undistort_map2_);
+  } else {
+    cv::initUndistortRectifyMap(K_, dist_coeffs_, cv::Mat(), K_, image_size,
+                                CV_16SC2, undistort_map1_, undistort_map2_);
+  }
+  undistort_map_size_ = image_size;
 }
 
 void VisualOdomNode::appendTumPose(const rclcpp::Time& stamp,

@@ -238,7 +238,7 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
 
 // ─────────────────────────────────────────────────────────────────
 // TRACKING: projection + PnP only, NO Essential fallback
-// ─────────────��───────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 bool VisualFrontend::track(Frame::Ptr current_frame) {
   predictPose(current_frame);
 

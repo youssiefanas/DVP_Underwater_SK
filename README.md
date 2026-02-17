@@ -41,7 +41,7 @@ ros2 launch dv_slam visual_odom.launch.py image_topic:=/camera/rgb/image_color
 2. Use `evo` to align/compare:
    ```bash
    evo_ape tum src/frontend/vo_trajectory_tum.txt path/to/GroundTruth.txt --align --correct_scale --plot
-   evo_rpe tum src/frontend/vo_trajectory_tum.txt path/to/GroundTruth.txt --align --correct_scale
+   evo_rpe tum src/frontend/vo_trajectory_tum.txt path/to/GroundTruth.txt -va --align --correct_scale -p --plot_mode=xyz
    evo_traj tum src/frontend/vo_trajectory_tum.txt --ref=path/to/GroundTruth.txt -p --plot_mode=xyz
    ```
 
@@ -57,5 +57,6 @@ ros2 launch dv_slam visual_odom.launch.py image_topic:=/camera/rgb/image_color
 ## Notes
 
 - The frontend assumes monocular input with unknown scale; `mono.init_scale` in `config/dv_slam.yaml` is useful for roughly scaling translations to the dataset before backend optimization.
+- Set `Camera.model` to `pinhole` for OpenCV distortion (`k1,k2,p1,p2,k3`) or to `fisheye` for equidistant distortion (`k1..k4`).
 - Set `frontend.enable_viewer` to `true` if you want the real-time keypoint display (requires GUI/OpenCV windows).
 <!-- - `VisualFrontend` publishes `ja` path items whenever tracking succeeds; if you see large jumps, inspect `diag` output for pose jumps and `FeatureMatcher`. -->

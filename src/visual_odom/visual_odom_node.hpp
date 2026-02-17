@@ -17,8 +17,14 @@ public:
     ~VisualOdomNode() = default;
 
 private:
+    enum class CameraModel {
+      kPinhole,
+      kFisheye
+    };
+
     void image_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
     void appendTumPose(const rclcpp::Time& stamp, const gtsam::Pose3& pose);
+    void maybeBuildUndistortMaps(const cv::Size& image_size);
     // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
     // image_transport::ImageTransport it_;
     image_transport::Subscriber image_subscriber_;
@@ -31,7 +37,11 @@ private:
     // Camera model used by frontend and optional image undistortion
     cv::Mat K_;
     cv::Mat dist_coeffs_;
+    CameraModel camera_model_{CameraModel::kPinhole};
     bool use_undistort_{false};
+    cv::Mat undistort_map1_;
+    cv::Mat undistort_map2_;
+    cv::Size undistort_map_size_;
 
     // Optional runtime debug viewer in frontend.
     bool enable_viewer_{false};
