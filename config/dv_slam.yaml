@@ -27,31 +27,31 @@
     # model: pinhole | fisheye (equidistant, k1..k4)
     Camera:
       # TUM Freiburg 2 RGB intrinsics
-      model: pinhole
-      fx: 520.9
-      fy: 521.0
-      cx: 325.1
-      cy: 249.7
-      k1: 0.2312
-      k2: -0.7849
-      p1: -0.0033
-      p2: -0.0001
-      k3: 0.9172
-      undistort: true
+      # model: pinhole
+      # fx: 520.9
+      # fy: 521.0
+      # cx: 325.1
+      # cy: 249.7
+      # k1: 0.2312
+      # k2: -0.7849
+      # p1: -0.0033
+      # p2: -0.0001
+      # k3: 0.9172
+      # undistort: true
 
       # TUM Room 4:
-      # model: fisheye
-      # fx: 190.97847715128717
-      # fy: 190.9733070521226
-      # cx: 254.93170605935475
-      # cy: 256.8974428996504
-      # k1: 0.0034823894022493434
-      # k2: 0.0007150348452162257
-      # k3: -0.0020532361418706202
-      # k4: 0.00020293673591811182
-      # width: 512
-      # height: 512
-      # undistort: true
+      model: fisheye
+      fx: 190.97847715128717
+      fy: 190.9733070521226
+      cx: 254.93170605935475
+      cy: 256.8974428996504
+      k1: 0.0034823894022493434
+      k2: 0.0007150348452162257
+      k3: -0.0020532361418706202
+      k4: 0.00020293673591811182
+      width: 512
+      height: 512
+      undistort: true
 
       # AQUALOC
       # model: fisheye
@@ -80,12 +80,12 @@
 
     # ORB extractor params
     orb:
-      n_features: 2000
+      n_features: 1500
       scale_factor: 1.2
-      n_levels: 10
-      edge_threshold: 19
+      n_levels: 8
+      edge_threshold: 31
       first_level: 0
       wta_k: 2
       score_type: 0
       patch_size: 31
-      fast_threshold: 15
+      fast_threshold: 20
