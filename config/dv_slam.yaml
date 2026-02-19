@@ -27,32 +27,31 @@
     # model: pinhole | fisheye (equidistant, k1..k4)
     Camera:
       # TUM Freiburg 2 RGB intrinsics
-      # model: pinhole
-      # fx: 520.9
-      # fy: 521.0
-      # cx: 325.1
-      # cy: 249.7
-      # # TUM Freiburg 2 RGB distortion (d0..d4 -> k1,k2,p1,p2,k3)
-      # k1: 0.2312
-      # k2: -0.7849
-      # p1: -0.0033
-      # p2: -0.0001
-      # k3: 0.9172
-      # undistort: true
+      model: pinhole
+      fx: 520.9
+      fy: 521.0
+      cx: 325.1
+      cy: 249.7
+      k1: 0.2312
+      k2: -0.7849
+      p1: -0.0033
+      p2: -0.0001
+      k3: 0.9172
+      undistort: true
 
       # TUM Room 4:
-      model: fisheye
-      fx: 190.97847715128717
-      fy: 190.9733070521226
-      cx: 254.93170605935475
-      cy: 256.8974428996504
-      k1: 0.0034823894022493434
-      k2: 0.0007150348452162257
-      k3: -0.0020532361418706202
-      k4: 0.00020293673591811182
-      width: 512
-      height: 512
-      undistort: true
+      # model: fisheye
+      # fx: 190.97847715128717
+      # fy: 190.9733070521226
+      # cx: 254.93170605935475
+      # cy: 256.8974428996504
+      # k1: 0.0034823894022493434
+      # k2: 0.0007150348452162257
+      # k3: -0.0020532361418706202
+      # k4: 0.00020293673591811182
+      # width: 512
+      # height: 512
+      # undistort: true
 
       # AQUALOC
       # model: fisheye

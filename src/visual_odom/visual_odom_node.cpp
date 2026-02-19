@@ -104,9 +104,11 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
       }
     }
     use_undistort_ = use_undistort_ && has_distortion;
-    if (use_undistort_ && image_width > 0 && image_height > 0) {
+    if (use_undistort_ && camera_model_ == CameraModel::kFisheye &&
+        image_width > 0 && image_height > 0) {
       maybeBuildUndistortMaps(cv::Size(image_width, image_height));
-    } else if (use_undistort_ && (image_width <= 0 || image_height <= 0)) {
+    } else if (use_undistort_ && camera_model_ == CameraModel::kFisheye &&
+               (image_width <= 0 || image_height <= 0)) {
       RCLCPP_INFO(this->get_logger(),
                   "Camera.width/height not set. Undistortion maps will be "
                   "initialized from the first image frame.");
@@ -172,10 +174,13 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
     }
 
     cv::Mat frontend_image;
-    if (use_undistort_) {
+    if (use_undistort_ && camera_model_ == CameraModel::kFisheye) {
       maybeBuildUndistortMaps(gray_image.size());
       cv::remap(gray_image, frontend_image, undistort_map1_, undistort_map2_,
                 cv::INTER_LINEAR);
+    } else if (use_undistort_ && camera_model_ == CameraModel::kPinhole) {
+      // For pinhole with distortion, we can undistort on-the-fly without precomputed maps
+      cv::undistort(gray_image, frontend_image, K_, dist_coeffs_);
     } else {
       frontend_image = gray_image;
     }
@@ -224,14 +229,15 @@ void VisualOdomNode::maybeBuildUndistortMaps(const cv::Size& image_size) {
     return;
   }
 
-  if (camera_model_ == CameraModel::kFisheye) {
-    cv::fisheye::initUndistortRectifyMap(
-        K_, dist_coeffs_, cv::Mat::eye(3, 3, CV_64F), K_, image_size,
-        CV_16SC2, undistort_map1_, undistort_map2_);
-  } else {
-    cv::initUndistortRectifyMap(K_, dist_coeffs_, cv::Mat(), K_, image_size,
-                                CV_16SC2, undistort_map1_, undistort_map2_);
+  if (camera_model_ != CameraModel::kFisheye) {
+    return;
   }
+
+  // Keep output intrinsics equal to K_ so the frontend's camera model stays
+  // consistent with the undistorted image passed to it.
+  cv::fisheye::initUndistortRectifyMap(
+      K_, dist_coeffs_, cv::Mat::eye(3, 3, CV_64F), K_, image_size, CV_16SC2,
+      undistort_map1_, undistort_map2_);
   undistort_map_size_ = image_size;
 }
 
