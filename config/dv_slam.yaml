@@ -1,13 +1,14 @@
 /**:
   ros__parameters:
-    image_topic: "/camera/rgb/image_color"
-    matcher_type: "NORM_HAMMING"
+    # Shared parameters. Dataset-specific image topic and camera intrinsics
+    # are defined in config/datasets/*.yaml and overlaid at launch.
+    matcher_type: "NORM_HAMMING" # "NORM_HAMMING" | "NORM_L2"
     frontend:
       enable_viewer: true
       # Make OpenCV stochastic parts (e.g., RANSAC sampling) repeatable.
-      cv_rng_seed: 0
+      cv_rng_seed: 2 # 0 for non-deterministic, fixed value for reproducible runs.
       # Keep single-threaded feature extraction/matching for reproducibility.
-      cv_num_threads: 1
+      cv_num_threads: 0 # 0 for OpenCV default, 1 for single-threaded, >1 for multi-threaded.
 
     input:
       # Larger queue + reliable QoS reduce run-to-run frame drops.
@@ -19,64 +20,10 @@
       # Start near fr2_xyz scale; fine-tune using evo APE after first run.
       init_scale: 0.1
 
-    output:
-      save_tum_trajectory: true
-      tum_trajectory_path: "vo_trajectory_tum.txt"
+    # output:
+    #   save_tum_trajectory: true
+    #   tum_trajectory_path: "vo_trajectory_tum.txt"
 
-    # Camera intrinsics and distortion (OpenCV)
-    # model: pinhole | fisheye (equidistant, k1..k4)
-    Camera:
-      # TUM Freiburg 2 RGB intrinsics
-      # model: pinhole
-      # fx: 520.9
-      # fy: 521.0
-      # cx: 325.1
-      # cy: 249.7
-      # k1: 0.2312
-      # k2: -0.7849
-      # p1: -0.0033
-      # p2: -0.0001
-      # k3: 0.9172
-      # undistort: true
-
-      # TUM Room 4:
-      model: fisheye
-      fx: 190.97847715128717
-      fy: 190.9733070521226
-      cx: 254.93170605935475
-      cy: 256.8974428996504
-      k1: 0.0034823894022493434
-      k2: 0.0007150348452162257
-      k3: -0.0020532361418706202
-      k4: 0.00020293673591811182
-      width: 512
-      height: 512
-      undistort: true
-
-      # AQUALOC
-      # model: fisheye
-      # fx: 413.32595366566017
-      # fy: 413.70198739483686
-      # cx: 305.9507483284928
-      # cy: 259.4439948946375
-      # k1: -0.06125568297136998
-      # k2: -0.003796743395135256
-      # k3: 0.027326634771204592
-      # k4: -0.030296403142887066
-      # width: 640
-      # height: 512
-      # undistort: true
-
-
-      # Legacy calibration values (previously in mono_cam_cal.yaml)
-      # fx: 543.3327734182214
-      # fy: 542.398772982566
-      # cx: 489.02536042247897
-      # cy: 305.38727712002805
-      # k1: -0.28340811
-      # k2: 0.07395907
-      # p1: 0.00019359
-      # p2: 1.76187114e-05
 
     # ORB extractor params
     orb:

@@ -26,6 +26,7 @@ public:
   size_t id_;
   Eigen::Vector3d position_;
   cv::Mat descriptor_; // Representative descriptor (e.g. median of observers)
+                       // calculated by MapPoint::computeDistinctiveDescriptor()
   bool isBad_ = false;
 
   /**

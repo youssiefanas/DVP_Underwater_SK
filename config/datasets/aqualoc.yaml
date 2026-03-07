@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    image_topic: "/camera/image_raw"
+
+    Camera:
+      model: fisheye
+      fx: 413.32595366566017
+      fy: 413.70198739483686
+      cx: 305.9507483284928
+      cy: 259.4439948946375
+      k1: -0.06125568297136998
+      k2: -0.003796743395135256
+      k3: 0.027326634771204592
+      k4: -0.030296403142887066
+      width: 640
+      height: 512
+      undistort: true
+
+    output:
+      save_tum_trajectory: true
+      tum_trajectory_path: "vo_trajectory_tum_aqualoc.txt"

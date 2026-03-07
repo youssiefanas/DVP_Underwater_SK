@@ -184,6 +184,11 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
     } else {
       frontend_image = gray_image;
     }
+
+    // CLAHE for contrast enhancement (helps feature detection in dark/bright areas)
+    auto clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
+    clahe->apply(frontend_image, frontend_image);
+
     double timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
     if (visual_frontend_->handleImage(frontend_image, timestamp)) {

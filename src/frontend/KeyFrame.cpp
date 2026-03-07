@@ -19,14 +19,16 @@ KeyFrame::KeyFrame(std::shared_ptr<Frame> frame, size_t id)
       keypoints_(frame->getKeypoints()),
       descriptors_(frame->getDescriptors()) // shallow copy
 {
-    pose_key_ = gtsam::Symbol('x', id_);
+  pose_key_ = gtsam::Symbol(
+      'x', id_); // For GTSAM integration. used as key in factor graph. 'x'
+                 // denotes pose variable, id is unique index.
 
-    // Copy MapPoint associations from the frame
-    const auto& frame_mps = frame->getMapPoints();
-    map_points_.resize(keypoints_.size(), nullptr);
-    for (size_t i = 0; i < frame_mps.size() && i < map_points_.size(); i++) {
-        map_points_[i] = frame_mps[i];
-    }
+  // Copy MapPoint associations from the frame
+  const auto &frame_mps = frame->getMapPoints();
+  map_points_.resize(keypoints_.size(), nullptr);
+  for (size_t i = 0; i < frame_mps.size() && i < map_points_.size(); i++) {
+    map_points_[i] = frame_mps[i];
+  }
 }
 
 KeyFrame::Ptr KeyFrame::create(std::shared_ptr<Frame> frame) {
@@ -44,10 +46,11 @@ size_t KeyFrame::countMapPoints() const {
     return count;
 }
 
-void KeyFrame::addCovisibleKeyFrame(KeyFrame::Ptr kf, int weight) {
-    if (!kf || kf.get() == this) return;
-    covisibility_weights_[kf] = weight;
-}
+// void KeyFrame::addCovisibleKeyFrame(KeyFrame::Ptr kf, int weight) {
+//     // Unused
+//     if (!kf || kf.get() == this) return;
+//     covisibility_weights_[kf] = weight;
+// }
 
 void KeyFrame::updateCovisibility() {
     // Count shared MapPoints with every other KeyFrame

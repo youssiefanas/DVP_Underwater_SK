@@ -56,6 +56,8 @@ public:
   // --- Covisibility ---
   /**
    * @brief Add a covisible KeyFrame with a weight = number of shared MapPoints.
+   *      This is a manual setter that explicitly links the current KeyFrame to
+   *      another KeyFrame with a specific "weight" (strength of connection).
    */
   void addCovisibleKeyFrame(KeyFrame::Ptr kf, int weight);
 

@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    image_topic: "/cam1/image_raw"
+
+    Camera:
+      model: fisheye
+      fx: 190.97847715128717
+      fy: 190.9733070521226
+      cx: 254.93170605935475
+      cy: 256.8974428996504
+      k1: 0.0034823894022493434
+      k2: 0.0007150348452162257
+      k3: -0.0020532361418706202
+      k4: 0.00020293673591811182
+      width: 512
+      height: 512
+      undistort: true
+
+    output:
+      tum_trajectory_path: "vo_trajectory_tum_tum_room4.txt"

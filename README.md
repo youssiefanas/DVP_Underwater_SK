@@ -6,8 +6,9 @@
 
 - `src/frontend/*`: Visual frontend (feature extractor/matcher, frame/keyframe/map abstractions, pose estimator with essential/PnP, and the trajectory-producing `VisualFrontend` state machine).
 - `src/visual_odom/*`: ROS 2 node that configures the frontend, subscribes to an image topic, publishes the path, and logs TUM poses (`vo_trajectory_tum.txt` in the repo root by default).
-- `config/dv_slam.yaml`: Single point of truth for camera intrinsics, ORB parameters, frontend options (deterministic OpenCV seed/threads), and trajectory logging toggles.
-- `launch/visual_odom.launch.py`: Launches `vo_node` with `dv_slam.yaml` and allows overriding the input topic.
+- `config/dv_slam.yaml`: Shared parameters (ORB, frontend, input QoS, mono scale, output toggles).
+- `config/datasets/*.yaml`: Dataset-specific overlays (image topic, camera intrinsics, optional dataset output path).
+- `launch/visual_odom.launch.py`: Launches `vo_node` with `dv_slam.yaml` plus a dataset overlay.
 
 <!-- ## Prerequisites
 
@@ -28,10 +29,15 @@ The build produces the `dv_slam_frontend` library and the `vo_node` executable.
 
 ```bash
 source install/setup.bash
-ros2 launch dv_slam visual_odom.launch.py image_topic:=/camera/rgb/image_color
+ros2 launch dv_slam visual_odom.launch.py
 ```
 
-- The node reads `config/dv_slam.yaml` for camera intrinsics and frontend tuning.
+- Default dataset overlay: `config/datasets/aqualoc.yaml`.
+- To switch dataset:
+  ```bash
+  ros2 launch dv_slam visual_odom.launch.py dataset_config:=datasets/tum_room4.yaml
+  ```
+- The node reads `config/dv_slam.yaml` first, then the selected `config/datasets/*.yaml` file.
 - The `output.save_tum_trajectory` parameter controls logging to `vo_trajectory_tum.txt`; set `output.tum_trajectory_path` if you prefer another location.
 
 
