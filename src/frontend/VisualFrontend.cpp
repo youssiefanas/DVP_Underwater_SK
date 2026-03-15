@@ -64,6 +64,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   case Stage::NO_IMAGES_YET: {
     current_frame->setPose(Pose3d::Identity());
     last_keyframe_ = KeyFrame::create(current_frame);
+    last_keyframe_->registerMapPointObservations();
     reference_keyframe_ = last_keyframe_;
     map_->addKeyFrame(last_keyframe_);
     last_frame_ = current_frame;
@@ -87,9 +88,9 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     bool ok = tryInitialize(current_frame);
     if (ok) {
       stage_ = Stage::TRACKING;
+      last_frame_ = current_frame;
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
     }
-    last_frame_ = current_frame;
     frames_since_last_kf_++;
     return ok;
   }
@@ -130,24 +131,29 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     return false;
   }
 
-  std::vector<cv::DMatch> matches =
-      feature_matcher_->match(last_frame_, current_frame);
+  auto matches = feature_matcher_->match(last_keyframe_->getDescriptors(),
+                                         current_frame->getDescriptors(), 0.7f);
   if (matches.size() < 20)
     return false;
 
   std::vector<cv::Point2f> pts_prev, pts_curr;
+  std::vector<cv::DMatch> valid_matches;
   pts_prev.reserve(matches.size());
   pts_curr.reserve(matches.size());
+  valid_matches.reserve(matches.size());
   for (const auto &m : matches) {
     if (m.queryIdx < 0 || m.trainIdx < 0) {
       continue;
     }
-    if (static_cast<size_t>(m.queryIdx) >= last_frame_->getKeypoints().size() ||
-        static_cast<size_t>(m.trainIdx) >= current_frame->getKeypoints().size()) {
+    if (static_cast<size_t>(m.queryIdx) >=
+            last_keyframe_->getKeypoints().size() ||
+        static_cast<size_t>(m.trainIdx) >=
+            current_frame->getKeypoints().size()) {
       continue;
     }
-    pts_prev.push_back(last_frame_->getKeypoints()[m.queryIdx].pt);
+    pts_prev.push_back(last_keyframe_->getKeypoints()[m.queryIdx].pt);
     pts_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
+    valid_matches.push_back(m);
   }
   if (pts_prev.size() < 20) {
     return false;
@@ -168,6 +174,20 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   if (baseline_raw < kMinBaseline)
     return false;
 
+  // Filter matches AND points by geometric inlier mask
+  std::vector<cv::DMatch> inlier_matches;
+  std::vector<cv::Point2f> pts_prev_inlier, pts_curr_inlier;
+  inlier_matches.reserve(inlier_count);
+  pts_prev_inlier.reserve(inlier_count);
+  pts_curr_inlier.reserve(inlier_count);
+  for (int i = 0; i < mask.rows; i++) {
+    if (mask.at<uchar>(i)) {
+      inlier_matches.push_back(valid_matches[i]);
+      pts_prev_inlier.push_back(pts_prev[i]);
+      pts_curr_inlier.push_back(pts_curr[i]);
+    }
+  }
+
   if (std::abs(init_scale_ - 1.0) > 1e-12) {
     Eigen::Vector3d t_scaled = T_prev_curr.translation() * init_scale_;
     T_prev_curr = makePose(T_prev_curr.linear(), t_scaled);
@@ -179,11 +199,56 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   current_frame->setPose(T_w_curr);
 
   KeyFrame::Ptr curr_kf = KeyFrame::create(current_frame);
-  size_t map_points_before = map_->numMapPoints();
+  curr_kf->registerMapPointObservations();
   map_->addKeyFrame(curr_kf);
-  triangulateNewPoints(last_keyframe_, curr_kf);
 
-  size_t created = map_->numMapPoints() - map_points_before;
+  cv::Mat R_d, t_d;
+  R.convertTo(R_d, CV_64F);
+  t.convertTo(t_d, CV_64F);
+  std::vector<cv::Point3f> points_3d;
+  pose_estimator_->triangulate(pts_prev_inlier, pts_curr_inlier, K_, R_d, t_d,
+                               points_3d);
+  Eigen::Matrix3d R_eig;
+  Eigen::Vector3d t_eig;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++)
+      R_eig(i, j) = R_d.at<double>(i, j);
+    t_eig(i) = t_d.at<double>(i);
+  }
+  Eigen::Vector3d C2_w = -R_eig.transpose() * t_eig;
+
+  size_t created = 0;
+  for (size_t i = 0; i < points_3d.size() && i < inlier_matches.size(); i++) {
+    const auto &p = points_3d[i];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+      continue;
+    cv::Mat pt = (cv::Mat_<double>(3, 1) << p.x, p.y, p.z);
+    if (pt.at<double>(2) <= 0)
+      continue;
+    cv::Mat pt_2 = R_d * pt + t_d;
+    if (pt_2.at<double>(2) <= 0)
+      continue;
+    if (cv::norm(pt) > 50.0)
+      continue;
+
+    Eigen::Vector3d P_w(p.x, p.y, p.z);
+    Eigen::Vector3d ray1 = P_w;
+    Eigen::Vector3d ray2 = P_w - C2_w;
+    double cos_par = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
+    cos_par = std::max(-1.0, std::min(1.0, cos_par));
+    if (std::acos(cos_par) < 1.0 * M_PI / 180.0)
+      continue;
+
+    MapPoint::Ptr mp = MapPoint::create(P_w);
+    const auto &m = inlier_matches[i];
+    mp->addObservation(last_keyframe_, m.queryIdx);
+    mp->addObservation(curr_kf, m.trainIdx);
+    last_keyframe_->accessMapPoints()[m.queryIdx] = mp;
+    curr_kf->accessMapPoints()[m.trainIdx] = mp;
+    mp->computeDistinctiveDescriptor();
+    map_->addMapPoint(mp);
+    created++;
+  }
   if ((int)created < kMinInitMapPoints) {
     for (auto &mp : curr_kf->accessMapPoints()) {
       if (!mp)
@@ -295,29 +360,23 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
 
   // Phase 3: Relocalization against reference KF
   if ((int)total_tracked < kMinProjectionMatches && reference_keyframe_) {
-    std::vector<std::vector<cv::DMatch>> knn_matches;
-    auto matcher = cv::DescriptorMatcher::create("BruteForce-Hamming");
-    if (!reference_keyframe_->getDescriptors().empty() &&
-        !current_frame->getDescriptors().empty()) {
-      matcher->knnMatch(reference_keyframe_->getDescriptors(),
-                        current_frame->getDescriptors(), knn_matches, 2);
-      for (const auto &knn : knn_matches) {
-        if (knn.size() < 2)
-          continue;
-        if (knn[0].distance < 0.7f * knn[1].distance) {
-          size_t kf_idx = knn[0].queryIdx;
-          size_t fr_idx = knn[0].trainIdx;
-          if (fr_idx >= current_frame->accessMapPoints().size())
-            continue;
-          if (current_frame->accessMapPoints()[fr_idx])
-            continue;
-          if (kf_idx < reference_keyframe_->getMapPoints().size()) {
-            MapPoint::Ptr mp = reference_keyframe_->getMapPoints()[kf_idx];
-            if (mp && !mp->isBad_) {
-              current_frame->accessMapPoints()[fr_idx] = mp;
-            }
-          }
+    auto reloc_matches =
+        feature_matcher_->match(reference_keyframe_->getDescriptors(),
+                                current_frame->getDescriptors(), 0.7f);
+    for (const auto &m : reloc_matches) {
+      size_t kf_idx = m.queryIdx;
+      size_t fr_idx = m.trainIdx;
+      if (fr_idx >= current_frame->accessMapPoints().size())
+        continue;
+      if (current_frame->accessMapPoints()[fr_idx])
+        continue;
+      if (kf_idx < reference_keyframe_->getMapPoints().size()) {
+        MapPoint::Ptr mp = reference_keyframe_->getMapPoints()[kf_idx];
+        if (mp && !mp->isBad_) {
+          current_frame->accessMapPoints()[fr_idx] = mp;
         }
+      }
+    }
       }
       total_tracked = countTrackedMapPoints(current_frame);
     }
@@ -415,6 +474,7 @@ bool VisualFrontend::shouldInsertKeyFrame(Frame::Ptr current_frame) const {
 
 void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
   KeyFrame::Ptr new_kf = KeyFrame::create(current_frame);
+  new_kf->registerMapPointObservations();
   map_->addKeyFrame(new_kf);
   triangulateNewPoints(last_keyframe_, new_kf);
   new_kf->updateCovisibility();
@@ -447,27 +507,23 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
 
 void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
                                           KeyFrame::Ptr kf2) {
-  if (!kf1 || !kf2) {
+  if (!kf1 || !kf2)
     return;
-  }
-  if (kf1->getDescriptors().empty() || kf2->getDescriptors().empty()) {
+  if (kf1->getDescriptors().empty() || kf2->getDescriptors().empty())
     return;
-  }
 
-  std::vector<std::vector<cv::DMatch>> knn_matches;
-  auto matcher = cv::DescriptorMatcher::create("BruteForce-Hamming");
-  matcher->knnMatch(kf1->getDescriptors(), kf2->getDescriptors(), knn_matches,
-                    2);
+  auto good_matches = feature_matcher_->match(kf1->getDescriptors(),
+                                              kf2->getDescriptors(), 0.7f);
 
-  std::vector<cv::DMatch> good_matches;
-  for (const auto &knn : knn_matches) {
-    if (knn.size() < 2)
-      continue;
-    if (knn[0].distance < 0.7f * knn[1].distance)
-      good_matches.push_back(knn[0]);
-  }
-  if (good_matches.empty())
+  triangulateNewPoints(kf1, kf2, good_matches);
+}
+
+void VisualFrontend::triangulateNewPoints(
+    KeyFrame::Ptr kf1, KeyFrame::Ptr kf2,
+    const std::vector<cv::DMatch> &good_matches) {
+  if (!kf1 || !kf2 || good_matches.empty()) {
     return;
+  }
 
   std::vector<cv::Point2f> pts1, pts2;
   std::vector<cv::DMatch> matches_to_triangulate;
@@ -544,11 +600,15 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
     if (cv::norm(pt) > 50.0)
       continue;
 
-    cv::Mat b1 = pt / cv::norm(pt);
-    cv::Mat b2 = pt_2 / cv::norm(pt_2);
-    double dot_val = std::max(-1.0, std::min(1.0, b1.dot(b2)));
-    if (std::acos(dot_val) < 1.0 * M_PI / 180.0)
+    Eigen::Vector3d p_cam1(p.x, p.y, p.z);
+    Eigen::Vector3d p_world = p1.R * p_cam1 + p1.t;
+    Eigen::Vector3d ray1 = p_world - C1_w;
+    Eigen::Vector3d ray2 = p_world - C2_w;
+    double cos_parallax = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
+    cos_parallax = std::max(-1.0, std::min(1.0, cos_parallax));
+    if (std::acos(cos_parallax) < 1.0 * M_PI / 180.0) {
       continue;
+    }
 
     Eigen::Vector3d p_world = T_w_1 * Eigen::Vector3d(p.x, p.y, p.z);
     MapPoint::Ptr mp = MapPoint::create(p_world);
