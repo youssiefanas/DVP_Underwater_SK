@@ -250,7 +250,12 @@ cv::Mat VisualOdomNode::preprocessImage(const cv::Mat &raw) {
     cv::cvtColor(raw, gray, cv::COLOR_BGR2GRAY);
   }
 
-  // 2. Optional undistortion.
+  // 2. Ensure 8-bit depth (e.g. mono16 → mono8) for ORB compatibility.
+  if (gray.depth() != CV_8U) {
+    gray.convertTo(gray, CV_8U, 1.0 / 256.0);
+  }
+
+  // 3. Optional undistortion.
   cv::Mat undistorted;
   if (use_undistort_ && camera_model_ == CameraModel::kFisheye) {
     maybeBuildUndistortMaps(gray.size());

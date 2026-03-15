@@ -28,7 +28,8 @@ class PoseEstimator;
 enum class Stage {
   NO_IMAGES_YET,  ///< No frames have been received yet.
   INITIALIZING,   ///< Have one frame; waiting for a second with enough baseline.
-  TRACKING         ///< Map is initialized; steady-state tracking active.
+  TRACKING,       ///< Map is initialized; steady-state tracking active.
+  LOST            ///< Tracking lost; attempting relocalization against known keyframes.
 };
 
 /**
@@ -334,6 +335,27 @@ private:
      */
     void rollbackFailedInitialization(KeyFrame::Ptr curr_kf);
 
+    /**
+     * @brief Attempt relocalization by matching against recent keyframes.
+     *
+     * Iterates over all keyframes in the map, matches descriptors against
+     * the current frame, and attempts PnP. Returns true if a valid pose
+     * is recovered.
+     *
+     * @param current_frame  The frame to relocalize.
+     * @return true if relocalization succeeded.
+     */
+    bool tryRelocalize(Frame::Ptr current_frame);
+
+    /**
+     * @brief Reset the frontend to re-initialize from the current frame.
+     *
+     * Called when relocalization fails for too long. Clears the map and
+     * transitions back to NO_IMAGES_YET, using the last known good pose
+     * as the starting point for the new map segment.
+     */
+    void resetToInitializing();
+
 private:
     // ─── State ───────────────────────────────────────────────────
     Stage stage_;  ///< Current pipeline stage.
@@ -361,6 +383,8 @@ private:
     Pose3d velocity_{Pose3d::Identity()}; ///< Last inter-frame relative transform (T_{k-1,k}).
     bool has_velocity_ = false;           ///< True once at least one velocity estimate exists.
     int consecutive_failures_ = 0;        ///< Consecutive frames where tracking failed.
+    int lost_frames_ = 0;                 ///< Frames spent in LOST state.
+    Pose3d last_good_pose_{Pose3d::Identity()};  ///< Last successfully tracked pose (for recovery).
 
     /// Pending output for the backend (consumed by the VO node).
     std::optional<FrontendOutput> pending_output_;
@@ -374,7 +398,8 @@ private:
     // ─── Tracking / PnP thresholds ──────────────────────────────
     static constexpr double kMaxPoseJumpTranslation = 0.20; ///< Max allowed pose-jump translation (meters).
     static constexpr double kMaxPoseJumpRotationDeg = 12.0; ///< Max allowed pose-jump rotation (degrees).
-    static constexpr int kMaxConsecutiveFailures = 10;      ///< Failures before resetting velocity model.
+    static constexpr int kMaxConsecutiveFailures = 5;       ///< Failures before transitioning to LOST.
+    static constexpr int kMaxRelocFrames = 30;              ///< Max frames in LOST before re-initialization.
     static constexpr int kMinInitMapPoints = 25;            ///< Min triangulated points for init to succeed.
     static constexpr int kMinTrackedMapPoints = 30;         ///< Below this count, force a new KF.
     static constexpr int kMinProjectionMatches = 12;        ///< Min projection matches before widening search.

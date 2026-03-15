@@ -131,7 +131,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   switch (stage_) {
 
   case Stage::NO_IMAGES_YET: {
-    current_frame->setPose(Pose3d::Identity());
+    current_frame->setPose(last_good_pose_);
     last_keyframe_ = KeyFrame::create(current_frame);
     last_keyframe_->registerMapPointObservations();
     reference_keyframe_ = last_keyframe_;
@@ -142,8 +142,8 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
 
     FrontendOutput output;
     output.is_first_keyframe = true;
-    output.prior_pose = Pose3d::Identity();
-    output.initial_estimate = Pose3d::Identity();
+    output.prior_pose = last_good_pose_;
+    output.initial_estimate = last_good_pose_;
     output.timestamp = current_frame->getTimestamp();
     pending_output_ = output;
 
@@ -171,21 +171,48 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
             last_frame_->getPose().inverse() * current_frame->getPose();
         has_velocity_ = true;
       }
+      last_good_pose_ = current_frame->getPose();
       last_frame_ = current_frame;
       consecutive_failures_ = 0;
     } else {
       consecutive_failures_++;
-      // Keep last_frame_ as the last successfully tracked frame.
-      // Overwriting with failed frames collapses Phase-1 MP propagation.
       if (last_frame_) {
         current_frame->setPose(last_frame_->getPose());
       }
-      if (consecutive_failures_ > kMaxConsecutiveFailures) {
+      if (consecutive_failures_ >= kMaxConsecutiveFailures) {
+        std::cout << "[Frontend] Tracking lost after " << consecutive_failures_
+                  << " consecutive failures → LOST" << std::endl;
+        stage_ = Stage::LOST;
         has_velocity_ = false;
+        lost_frames_ = 0;
       }
     }
     frames_since_last_kf_++;
     return ok;
+  }
+
+  case Stage::LOST: {
+    lost_frames_++;
+    bool ok = tryRelocalize(current_frame);
+    if (ok) {
+      std::cout << "[Frontend] Relocalized → TRACKING" << std::endl;
+      stage_ = Stage::TRACKING;
+      consecutive_failures_ = 0;
+      lost_frames_ = 0;
+      if (last_frame_) {
+        velocity_ = last_frame_->getPose().inverse() * current_frame->getPose();
+        has_velocity_ = true;
+      }
+      last_good_pose_ = current_frame->getPose();
+      last_frame_ = current_frame;
+      return true;
+    }
+    if (lost_frames_ >= kMaxRelocFrames) {
+      std::cout << "[Frontend] Relocalization failed for " << lost_frames_
+                << " frames → re-initializing" << std::endl;
+      resetToInitializing();
+    }
+    return false;
   }
 
   } // end switch
@@ -570,6 +597,109 @@ void VisualFrontend::rollbackFailedInitialization(KeyFrame::Ptr curr_kf) {
       mp = nullptr;
   }
   map_->removeKeyFrame(curr_kf);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RELOCALIZATION (LOST state)
+// ─────────────────────────────────────────────────────────────────
+
+bool VisualFrontend::tryRelocalize(Frame::Ptr current_frame) {
+  if (!current_frame || map_->numKeyFrames() == 0)
+    return false;
+
+  // Collect candidate keyframes sorted by recency (newest first)
+  std::vector<KeyFrame::Ptr> candidates(map_->getAllKeyFrames().begin(),
+                                        map_->getAllKeyFrames().end());
+  std::sort(candidates.begin(), candidates.end(),
+            [](const KeyFrame::Ptr &a, const KeyFrame::Ptr &b) {
+              return a->getTimestamp() > b->getTimestamp();
+            });
+
+  // Try matching against each candidate keyframe
+  const size_t max_candidates = std::min(candidates.size(), size_t(5));
+  for (size_t c = 0; c < max_candidates; c++) {
+    KeyFrame::Ptr kf = candidates[c];
+    if (!kf || kf->getDescriptors().empty())
+      continue;
+
+    auto matches = feature_matcher_->match(kf->getDescriptors(),
+                                           current_frame->getDescriptors(),
+                                           kMatchRatioThreshold);
+    if (matches.size() < kMinMatchesForInit)
+      continue;
+
+    // Associate MapPoints from this keyframe to the current frame
+    current_frame->ensureMapPointVectorSized(
+        current_frame->getKeypoints().size());
+    // Clear previous associations for a fresh attempt
+    for (auto &mp : current_frame->accessMapPoints())
+      mp = nullptr;
+
+    size_t associated = 0;
+    for (const auto &m : matches) {
+      size_t kf_idx = static_cast<size_t>(m.queryIdx);
+      size_t fr_idx = static_cast<size_t>(m.trainIdx);
+      if (fr_idx >= current_frame->accessMapPoints().size())
+        continue;
+      if (kf_idx < kf->getMapPoints().size()) {
+        MapPoint::Ptr mp = kf->getMapPoints()[kf_idx];
+        if (mp && !mp->isBad_) {
+          current_frame->accessMapPoints()[fr_idx] = mp;
+          associated++;
+        }
+      }
+    }
+
+    if (static_cast<int>(associated) < kMinPnPInliers)
+      continue;
+
+    // Set an initial pose guess from the candidate keyframe
+    current_frame->setPose(kf->getPose());
+
+    int pnp_inliers = 0;
+    if (pose_estimator_->estimateRefined(current_frame, &pnp_inliers) &&
+        pnp_inliers >= kMinPnPInliers) {
+      // Update reference to the keyframe that relocated us
+      reference_keyframe_ = kf;
+      last_keyframe_ = kf;
+      frames_since_last_kf_ = 0;
+      std::cout << "[Frontend] Reloc via KF " << kf->getId()
+                << " | inliers=" << pnp_inliers << " | Pose: "
+                << current_frame->getPose().translation().transpose()
+                << std::endl;
+      return true;
+    }
+  }
+
+  std::cout << "[Frontend] Relocalization attempt " << lost_frames_ << "/"
+            << kMaxRelocFrames << " failed" << std::endl;
+  return false;
+}
+
+void VisualFrontend::resetToInitializing() {
+  // Preserve the last known good pose as the starting point
+  Pose3d restart_pose = last_good_pose_;
+
+  // Clear the map
+  map_ = std::make_shared<Map>();
+
+  // Reset all state
+  last_frame_ = nullptr;
+  last_keyframe_ = nullptr;
+  reference_keyframe_ = nullptr;
+  current_frame_ = nullptr;
+  has_velocity_ = false;
+  velocity_ = Pose3d::Identity();
+  consecutive_failures_ = 0;
+  lost_frames_ = 0;
+  frames_since_last_kf_ = 0;
+
+  // Transition back to NO_IMAGES_YET — the next frame will
+  // start a fresh map segment anchored at the last known pose
+  stage_ = Stage::NO_IMAGES_YET;
+
+  std::cout << "[Frontend] Reset complete. Last known pose: "
+            << restart_pose.translation().transpose() << std::endl;
 }
 
 // ─────────────────────────────────────────────────────────────────
