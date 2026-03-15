@@ -3,10 +3,10 @@
 #include <memory>
 #include <vector>
 
-#include <gtsam/geometry/Pose3.h>
 #include <opencv2/core.hpp>
 
 #include "MapPoint.hpp"
+#include "Pose3d.hpp"
 
 namespace frontend {
 
@@ -36,8 +36,8 @@ public:
     const cv::Mat& getImage() const;
 
     // Pose Getter/Setter
-    const gtsam::Pose3& getPose() const;
-    void setPose(const gtsam::Pose3& pose);
+    const Pose3d& getPose() const;
+    void setPose(const Pose3d& pose);
 
     // Feature access
     const std::vector<cv::KeyPoint>& getKeypoints() const;
@@ -54,7 +54,7 @@ public:
     
     // Pose: Transformation from World to Camera (T_c_w) or vice versa. 
     // Left empty for now, but you will need this later.
-    gtsam::Pose3 pose_; 
+    Pose3d pose_{Pose3d::Identity()};
 
 private:
     // Private constructor: forces users to use the createFrame() factory

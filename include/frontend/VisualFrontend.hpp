@@ -3,8 +3,6 @@
 #include <memory>
 #include <optional>
 
-#include <gtsam/geometry/Pose3.h>
-#include <gtsam/inference/Symbol.h>
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 
@@ -36,13 +34,14 @@ enum class Stage {
  * @brief Output struct to be consumed by the backend (Visual Odom Node)
  */
 struct FrontendOutput {
-  gtsam::Key previous_key;       ///< Key of the previous KeyFrame
-  gtsam::Key current_key;        ///< Key of the current (new) KeyFrame
-  gtsam::Pose3 relative_pose;    ///< Measured relative pose: T_{prev}^{-1} * T_{curr}
-  gtsam::Pose3 initial_estimate; ///< Initial world pose of current KeyFrame
+  Pose3d relative_pose{
+      Pose3d::Identity()}; ///< Measured relative pose: T_{prev}^{-1} * T_{curr}
+  Pose3d initial_estimate{
+      Pose3d::Identity()};       ///< Initial world pose of current KeyFrame
   double timestamp;              ///< Timestamp of the current frame
   bool is_first_keyframe = false;///< If true, add a PriorFactor instead of BetweenFactor
-  gtsam::Pose3 prior_pose;       ///< Used only if is_first_keyframe is true
+  Pose3d prior_pose{
+      Pose3d::Identity()}; ///< Used only if is_first_keyframe is true
 };
 
 class VisualFrontend {
@@ -149,7 +148,7 @@ private:
     Map::Ptr map_;
 
     // --- Velocity model (for pose prediction) ---
-    gtsam::Pose3 velocity_; // T_{k-1, k} relative transform
+    Pose3d velocity_{Pose3d::Identity()}; // T_{k-1, k} relative transform
     bool has_velocity_ = false;
     int consecutive_failures_ = 0;
 

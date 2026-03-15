@@ -4,8 +4,9 @@
 #include <memory>
 
 #include <Eigen/Core>
-#include <gtsam/inference/Symbol.h>
 #include <opencv2/core.hpp>
+
+#include "Pose3d.hpp"
 
 namespace frontend {
 
@@ -54,9 +55,6 @@ public:
    * others.
    */
   void computeDistinctiveDescriptor();
-
-  // --- GTSAM integration ---
-  gtsam::Key getLandmarkKey() const; // gtsam::Symbol('l', id_)
 
 private:
   MapPoint(const Eigen::Vector3d &pos, size_t id);

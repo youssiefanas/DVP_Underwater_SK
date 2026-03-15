@@ -7,7 +7,7 @@ static size_t current_frame_id = 0;
 
 Frame::Frame(size_t id, double timestamp, const cv::Mat& image)
     : id_(id), timestamp_(timestamp), image_(image.clone()) {
-    pose_ = gtsam::Pose3();
+    pose_ = Pose3d::Identity();
 }
 
 Frame::Ptr Frame::createFrame(const cv::Mat& image, double timestamp) {
@@ -31,8 +31,8 @@ const cv::Mat& Frame::getImage() const { return image_; }
 
 // Pose Getter/Setter
 // Pass by const reference to avoid copying
-const gtsam::Pose3& Frame::getPose() const { return pose_; }
-void Frame::setPose(const gtsam::Pose3& pose) { pose_ = pose; }
+const Pose3d& Frame::getPose() const { return pose_; }
+void Frame::setPose(const Pose3d& pose) { pose_ = pose; }
 
 // Access features (const reference to avoid copying)
 const std::vector<cv::KeyPoint>& Frame::getKeypoints() const { return keypoints_; }

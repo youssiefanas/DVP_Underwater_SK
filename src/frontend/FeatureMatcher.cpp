@@ -1,6 +1,5 @@
 #include "frontend/FeatureMatcher.hpp"
 #include <iostream>
-#include <gtsam/geometry/Point3.h>
 
 namespace frontend {
 
@@ -43,7 +42,7 @@ std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr fram
 
 int FeatureMatcher::matchByProjection(
     Frame::Ptr frame, const std::vector<MapPoint::Ptr> &map_points,
-    const cv::Mat &K, const gtsam::Pose3 &T_w_c, float search_radius) {
+    const cv::Mat &K, const Pose3d &T_w_c, float search_radius) {
   if (!frame || frame->getDescriptors().empty() || frame->getKeypoints().empty() ||
       K.empty()) {
     return 0;
@@ -51,7 +50,7 @@ int FeatureMatcher::matchByProjection(
   frame->ensureMapPointVectorSized(frame->getKeypoints().size());
 
   int matches = 0;
-  gtsam::Pose3 T_c_w = T_w_c.inverse();
+  Pose3d T_c_w = T_w_c.inverse();
 
   double fx = K.at<double>(0, 0), fy = K.at<double>(1, 1);
   double cx = K.at<double>(0, 2), cy = K.at<double>(1, 2);
@@ -70,7 +69,7 @@ int FeatureMatcher::matchByProjection(
       continue; // Guard: need a descriptor to match
 
     // 1. Transform to camera frame
-    gtsam::Point3 p_cam = T_c_w.transformFrom(gtsam::Point3(mp->position_));
+    Eigen::Vector3d p_cam = T_c_w * mp->position_;
     if (p_cam.z() <= 0.1)
       continue; // Behind camera or too close
 

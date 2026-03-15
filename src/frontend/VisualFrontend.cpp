@@ -53,12 +53,6 @@ void VisualFrontend::extractFeatures(Frame::Ptr frame) {
   feature_extractor_->extract(*frame);
 }
 
-std::optional<FrontendOutput> VisualFrontend::consumeBackendOutput() {
-  auto output = pending_output_;
-  pending_output_.reset();
-  return output;
-}
-
 // ─────────────────────────────────────────────────────────────────
 // STATE MACHINE
 // ─────────────────────────────────────────────────────────────────
@@ -68,7 +62,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   switch (stage_) {
 
   case Stage::NO_IMAGES_YET: {
-    current_frame->setPose(gtsam::Pose3());
+    current_frame->setPose(Pose3d::Identity());
     last_keyframe_ = KeyFrame::create(current_frame);
     reference_keyframe_ = last_keyframe_;
     map_->addKeyFrame(last_keyframe_);
@@ -79,9 +73,8 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     // Emit prior for first KF
     FrontendOutput output;
     output.is_first_keyframe = true;
-    output.current_key = last_keyframe_->getPoseKey();
-    output.prior_pose = gtsam::Pose3();
-    output.initial_estimate = gtsam::Pose3();
+    output.prior_pose = Pose3d::Identity();
+    output.initial_estimate = Pose3d::Identity();
     output.timestamp = current_frame->getTimestamp();
     pending_output_ = output;
 
@@ -169,22 +162,20 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     return false;
 
   // recoverPose returns T_curr_prev (x_curr = R*x_prev + t). We store T_w_c.
-  gtsam::Pose3 T_curr_prev = cvToGtsam(R, t);
-  gtsam::Pose3 T_prev_curr = T_curr_prev.inverse();
+  Pose3d T_curr_prev = cvToPose3d(R, t);
+  Pose3d T_prev_curr = T_curr_prev.inverse();
   const double baseline_raw = T_prev_curr.translation().norm();
   if (baseline_raw < kMinBaseline)
     return false;
 
   if (std::abs(init_scale_ - 1.0) > 1e-12) {
-    const auto t_scaled = T_prev_curr.translation() * init_scale_;
-    T_prev_curr =
-        gtsam::Pose3(T_prev_curr.rotation(),
-                     gtsam::Point3(t_scaled.x(), t_scaled.y(), t_scaled.z()));
+    Eigen::Vector3d t_scaled = T_prev_curr.translation() * init_scale_;
+    T_prev_curr = makePose(T_prev_curr.linear(), t_scaled);
   }
   double baseline = T_prev_curr.translation().norm();
 
-  gtsam::Pose3 T_w_prev = last_keyframe_->getPose();
-  gtsam::Pose3 T_w_curr = T_w_prev * T_prev_curr;
+  Pose3d T_w_prev = last_keyframe_->getPose();
+  Pose3d T_w_curr = T_w_prev * T_prev_curr;
   current_frame->setPose(T_w_curr);
 
   KeyFrame::Ptr curr_kf = KeyFrame::create(current_frame);
@@ -219,8 +210,6 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   // Emit BetweenFactor for backend
   FrontendOutput output;
   output.is_first_keyframe = false;
-  output.previous_key = last_keyframe_->getPoseKey();
-  output.current_key = curr_kf->getPoseKey();
   output.relative_pose = T_prev_curr;
   output.initial_estimate = T_w_curr;
   output.timestamp = current_frame->getTimestamp();
@@ -264,7 +253,7 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
   if (!current_frame) {
     return false;
   }
-  const gtsam::Pose3 predicted_pose = current_frame->getPose();
+  const Pose3d predicted_pose = current_frame->getPose();
   current_frame->ensureMapPointVectorSized(
       current_frame->getKeypoints().size());
 
@@ -371,10 +360,10 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     }
   }
 
-  gtsam::Pose3 T_pred_curr = predicted_pose.inverse() * current_frame->getPose();
+  Pose3d T_pred_curr = predicted_pose.inverse() * current_frame->getPose();
   double pose_jump_t = T_pred_curr.translation().norm();
   double pose_jump_rot_deg =
-      Eigen::AngleAxisd(T_pred_curr.rotation().matrix()).angle() * 180.0 / M_PI;
+      Eigen::AngleAxisd(T_pred_curr.linear()).angle() * 180.0 / M_PI;
 
   double max_jump_t = kMaxPoseJumpTranslation;
   if (has_velocity_) {
@@ -411,13 +400,13 @@ bool VisualFrontend::shouldInsertKeyFrame(Frame::Ptr current_frame) const {
   if ((int)tracked < kMinTrackedMapPoints)
     return ((int)tracked >= kMinTrackedForNewKF);
 
-  gtsam::Pose3 T_kf_curr =
+  Pose3d T_kf_curr =
       last_keyframe_->getPose().inverse() * current_frame->getPose();
   double baseline = T_kf_curr.translation().norm();
   if (baseline > kMinBaseline)
     return true;
 
-  Eigen::AngleAxisd aa(T_kf_curr.rotation().matrix());
+  Eigen::AngleAxisd aa(T_kf_curr.linear());
   if (aa.angle() * 180.0 / M_PI > kMinRotationDeg)
     return true;
 
@@ -436,13 +425,11 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
   // EMIT BETWEEN FACTOR FOR GTSAM BACKEND
   // This is the key output that feeds the fixed-lag smoother.
   // ──────────────────────────────────────────────────────
-  gtsam::Pose3 relative_pose =
+  Pose3d relative_pose =
       last_keyframe_->getPose().inverse() * new_kf->getPose();
 
   FrontendOutput output;
   output.is_first_keyframe = false;
-  output.previous_key = last_keyframe_->getPoseKey();
-  output.current_key = new_kf->getPoseKey();
   output.relative_pose = relative_pose;
   output.initial_estimate = new_kf->getPose();
   output.timestamp = current_frame->getTimestamp();
@@ -525,11 +512,11 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
   if (pts1.empty())
     return;
 
-  gtsam::Pose3 T_w_1 = kf1->getPose();
+  Pose3d T_w_1 = kf1->getPose();
   // For triangulatePoints with pts1->pts2, P2 must be T_2_1 (cam1 -> cam2).
-  gtsam::Pose3 T_2_1 = kf2->getPose().inverse() * kf1->getPose();
+  Pose3d T_2_1 = kf2->getPose().inverse() * kf1->getPose();
 
-  Eigen::Matrix3d R_eigen = T_2_1.rotation().matrix();
+  Eigen::Matrix3d R_eigen = T_2_1.linear();
   Eigen::Vector3d t_eigen = T_2_1.translation();
   cv::Mat R_cv(3, 3, CV_64F), t_cv(3, 1, CV_64F);
   for (int i = 0; i < 3; i++) {
@@ -563,9 +550,8 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
     if (std::acos(dot_val) < 1.0 * M_PI / 180.0)
       continue;
 
-    gtsam::Point3 p_world = T_w_1.transformFrom(gtsam::Point3(p.x, p.y, p.z));
-    MapPoint::Ptr mp = MapPoint::create(
-        Eigen::Vector3d(p_world.x(), p_world.y(), p_world.z()));
+    Eigen::Vector3d p_world = T_w_1 * Eigen::Vector3d(p.x, p.y, p.z);
+    MapPoint::Ptr mp = MapPoint::create(p_world);
 
     const cv::DMatch &m = matches_to_triangulate[i];
     mp->addObservation(kf1, m.queryIdx);

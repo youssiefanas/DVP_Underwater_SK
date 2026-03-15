@@ -11,17 +11,12 @@ namespace frontend {
 size_t KeyFrame::next_id_ = 0;
 
 KeyFrame::KeyFrame(std::shared_ptr<Frame> frame, size_t id)
-    : id_(id),
-      frame_id_(frame->getId()),
-      timestamp_(frame->getTimestamp()),
+    : id_(id), frame_id_(frame->getId()), timestamp_(frame->getTimestamp()),
       pose_(frame->getPose()),
-      image_(frame->getImage()),           // shallow copy (cv::Mat ref-counted)
+      image_(frame->getImage()), // shallow copy (cv::Mat ref-counted)
       keypoints_(frame->getKeypoints()),
       descriptors_(frame->getDescriptors()) // shallow copy
 {
-  pose_key_ = gtsam::Symbol(
-      'x', id_); // For GTSAM integration. used as key in factor graph. 'x'
-                 // denotes pose variable, id is unique index.
 
   // Copy MapPoint associations from the frame
   const auto &frame_mps = frame->getMapPoints();

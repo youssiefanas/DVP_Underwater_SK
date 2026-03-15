@@ -23,7 +23,7 @@ private:
     };
 
     void image_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
-    void appendTumPose(const rclcpp::Time& stamp, const gtsam::Pose3& pose);
+    void appendTumPose(const rclcpp::Time& stamp, const frontend::Pose3d& pose);
     void maybeBuildUndistortMaps(const cv::Size& image_size);
     // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
     // image_transport::ImageTransport it_;

@@ -47,7 +47,7 @@ public:
      */
     int matchByProjection(Frame::Ptr frame,
                           const std::vector<MapPoint::Ptr> &map_points,
-                          const cv::Mat &K, const gtsam::Pose3 &T_w_c,
+                          const cv::Mat &K, const Pose3d &T_w_c,
                           float search_radius = 15.0f);
 
   private:

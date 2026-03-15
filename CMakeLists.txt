@@ -39,15 +39,12 @@ ament_auto_add_library(${PROJECT_NAME}_frontend
 target_include_directories(${PROJECT_NAME}_frontend PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  ${GTSAM_INCLUDE_DIRS}
   ${OPENCV_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME}_frontend
-  # ${GTSAM_LIBRARIES}
-  gtsam
- ${OPENCV_LIBS} 
+ ${OPENCV_LIBS}
 )
 
 ament_auto_add_executable(vo_node 

@@ -194,17 +194,17 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
     if (visual_frontend_->handleImage(frontend_image, timestamp)) {
       auto frame = visual_frontend_->getLatestFrame();
       if (frame) {
-        gtsam::Pose3 pose = frame->getPose();
+        const auto &pose = frame->getPose();
 
         geometry_msgs::msg::PoseStamped pose_msg;
         pose_msg.header.stamp = msg->header.stamp;
         pose_msg.header.frame_id = "map";
 
-        pose_msg.pose.position.x = pose.x();
-        pose_msg.pose.position.y = pose.y();
-        pose_msg.pose.position.z = pose.z();
+        pose_msg.pose.position.x = pose.translation().x();
+        pose_msg.pose.position.y = pose.translation().y();
+        pose_msg.pose.position.z = pose.translation().z();
 
-        gtsam::Quaternion q = pose.rotation().toQuaternion();
+        Eigen::Quaterniond q(pose.linear());
         pose_msg.pose.orientation.x = q.x();
         pose_msg.pose.orientation.y = q.y();
         pose_msg.pose.orientation.z = q.z();
@@ -247,16 +247,17 @@ void VisualOdomNode::maybeBuildUndistortMaps(const cv::Size& image_size) {
 }
 
 void VisualOdomNode::appendTumPose(const rclcpp::Time& stamp,
-                                   const gtsam::Pose3& pose) {
+                                   const frontend::Pose3d& pose) {
   if (!save_tum_trajectory_ || !tum_trajectory_file_.is_open()) {
     return;
   }
 
   const double t = stamp.seconds();
-  const gtsam::Quaternion q = pose.rotation().toQuaternion();
+  const Eigen::Quaterniond q(pose.linear());
+  const auto &tr = pose.translation();
   tum_trajectory_file_ << std::fixed << std::setprecision(9)
-                       << t << " " << pose.x() << " " << pose.y() << " "
-                       << pose.z() << " " << q.x() << " " << q.y() << " "
+                       << t << " " << tr.x() << " " << tr.y() << " "
+                       << tr.z() << " " << q.x() << " " << q.y() << " "
                        << q.z() << " " << q.w() << "\n";
 }
 

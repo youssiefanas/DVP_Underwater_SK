@@ -4,8 +4,6 @@
 #include <climits>
 #include <vector>
 
-#include <gtsam/inference/Symbol.h>
-
 #include "frontend/KeyFrame.hpp"
 
 namespace frontend {
@@ -89,7 +87,5 @@ void MapPoint::computeDistinctiveDescriptor() {
 
   descriptor_ = descriptors[best_idx].clone();
 }
-
-gtsam::Key MapPoint::getLandmarkKey() const { return gtsam::Symbol('l', id_); }
 
 } // namespace frontend

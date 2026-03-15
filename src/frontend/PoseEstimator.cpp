@@ -1,6 +1,5 @@
 #include "frontend/PoseEstimator.hpp"
 #include "dv_slam/utility.hpp"
-#include <gtsam/geometry/Pose3.h>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -73,11 +72,11 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
     return false;
   }
 
-  // Convert current pose T_w_c (GTSAM) to OpenCV T_c_w (camera-from-world)
-  gtsam::Pose3 T_w_c = frame->getPose();
-  gtsam::Pose3 T_c_w = T_w_c.inverse();
+  // Convert current pose T_w_c to OpenCV T_c_w (camera-from-world)
+  Pose3d T_w_c = frame->getPose();
+  Pose3d T_c_w = T_w_c.inverse();
 
-  Eigen::Matrix3d R_eigen = T_c_w.rotation().matrix();
+  Eigen::Matrix3d R_eigen = T_c_w.linear();
   Eigen::Vector3d t_eigen = T_c_w.translation();
 
   cv::Mat R_cv(3, 3, CV_64F);
@@ -123,7 +122,7 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   // Convert refined pose back: T_c_w → T_w_c
   cv::Mat R_refined;
   cv::Rodrigues(rvec, R_refined);
-  gtsam::Pose3 T_c_w_refined = cvToGtsam(R_refined, t_cv);
+  Pose3d T_c_w_refined = cvToPose3d(R_refined, t_cv);
   frame->setPose(T_c_w_refined.inverse());
 
   return true;

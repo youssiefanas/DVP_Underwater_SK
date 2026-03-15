@@ -4,11 +4,10 @@
 #include <set>
 #include <vector>
 
-#include <gtsam/geometry/Pose3.h>
-#include <gtsam/inference/Symbol.h>
 #include <opencv2/core.hpp>
 
 #include "MapPoint.hpp"
+#include "Pose3d.hpp"
 
 namespace frontend {
 
@@ -31,12 +30,9 @@ public:
   size_t getFrameId() const { return frame_id_; }
   double getTimestamp() const { return timestamp_; }
 
-  // --- GTSAM integration ---
-  gtsam::Key getPoseKey() const { return pose_key_; } // gtsam::Symbol('x', id_)
-
   // --- Pose (T_world_camera) ---
-  const gtsam::Pose3 &getPose() const { return pose_; }
-  void setPose(const gtsam::Pose3 &pose) { pose_ = pose; }
+  const Pose3d &getPose() const { return pose_; }
+  void setPose(const Pose3d &pose) { pose_ = pose; }
 
   // --- Features (copied from Frame at creation time) ---
   const std::vector<cv::KeyPoint> &getKeypoints() const { return keypoints_; }
@@ -91,11 +87,8 @@ private:
   size_t frame_id_; // Original Frame ID (for debug / traceability)
   double timestamp_;
 
-  // --- GTSAM ---
-  gtsam::Key pose_key_;
-
   // --- Geometry ---
-  gtsam::Pose3 pose_;
+  Pose3d pose_;
 
   // --- Visual data (owned copy) ---
   cv::Mat image_;
