@@ -166,11 +166,17 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
 
 void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg) {
   try {
-    cv::Mat gray_image =
-        cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
-    if (gray_image.empty()) {
+    cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(msg);
+    if (cv_ptr->image.empty()) {
       RCLCPP_WARN(this->get_logger(), "Received empty image frame.");
       return;
+    }
+
+    cv::Mat gray_image;
+    if (cv_ptr->image.channels() == 1) {
+      gray_image = cv_ptr->image;
+    } else {
+      cv::cvtColor(cv_ptr->image, gray_image, cv::COLOR_BGR2GRAY);
     }
 
     cv::Mat frontend_image;

@@ -113,10 +113,17 @@ private:
     void insertKeyFrame(Frame::Ptr current_frame);
 
     /**
-     * @brief Triangulate new MapPoints between two KeyFrames using their
-     *        matched but not-yet-triangulated features.
+     * @brief Triangulate new MapPoints between two KeyFrames.
+     *        Matches descriptors internally, then triangulates.
      */
     void triangulateNewPoints(KeyFrame::Ptr kf1, KeyFrame::Ptr kf2);
+
+    /**
+     * @brief Triangulate new MapPoints using pre-matched correspondences.
+     *        Used by initialization with geometrically verified inliers.
+     */
+    void triangulateNewPoints(KeyFrame::Ptr kf1, KeyFrame::Ptr kf2,
+                              const std::vector<cv::DMatch> &matches);
 
     /**
      * @brief Count how many keypoints in this frame are already associated

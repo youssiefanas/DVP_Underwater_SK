@@ -202,20 +202,21 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   curr_kf->registerMapPointObservations();
   map_->addKeyFrame(curr_kf);
 
-  cv::Mat R_d, t_d;
-  R.convertTo(R_d, CV_64F);
-  t.convertTo(t_d, CV_64F);
+  // Use the scaled relative pose (T_curr_prev) for triangulation so that
+  // the 3D points are consistent with the scaled KF poses.
+  Pose3d T_curr_prev_scaled = T_w_curr.inverse() * T_w_prev;
+  Eigen::Matrix3d R_eig = T_curr_prev_scaled.linear();
+  Eigen::Vector3d t_eig = T_curr_prev_scaled.translation();
+  cv::Mat R_d(3, 3, CV_64F), t_d(3, 1, CV_64F);
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++)
+      R_d.at<double>(i, j) = R_eig(i, j);
+    t_d.at<double>(i) = t_eig(i);
+  }
+
   std::vector<cv::Point3f> points_3d;
   pose_estimator_->triangulate(pts_prev_inlier, pts_curr_inlier, K_, R_d, t_d,
                                points_3d);
-  Eigen::Matrix3d R_eig;
-  Eigen::Vector3d t_eig;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++)
-      R_eig(i, j) = R_d.at<double>(i, j);
-    t_eig(i) = t_d.at<double>(i);
-  }
-  Eigen::Vector3d C2_w = -R_eig.transpose() * t_eig;
 
   size_t created = 0;
   for (size_t i = 0; i < points_3d.size() && i < inlier_matches.size(); i++) {
@@ -232,8 +233,8 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
       continue;
 
     Eigen::Vector3d P_w(p.x, p.y, p.z);
-    Eigen::Vector3d ray1 = P_w;
-    Eigen::Vector3d ray2 = P_w - C2_w;
+    Eigen::Vector3d ray1 = P_w;                    // KF1 is at origin
+    Eigen::Vector3d ray2 = P_w - T_w_curr.translation();
     double cos_par = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
     cos_par = std::max(-1.0, std::min(1.0, cos_par));
     if (std::acos(cos_par) < 1.0 * M_PI / 180.0)
@@ -377,9 +378,7 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
         }
       }
     }
-      }
-      total_tracked = countTrackedMapPoints(current_frame);
-    }
+    total_tracked = countTrackedMapPoints(current_frame);
   }
 
   if ((int)total_tracked < kMinPnPInliers) {
@@ -600,8 +599,10 @@ void VisualFrontend::triangulateNewPoints(
     if (cv::norm(pt) > 50.0)
       continue;
 
-    Eigen::Vector3d p_cam1(p.x, p.y, p.z);
-    Eigen::Vector3d p_world = p1.R * p_cam1 + p1.t;
+    Eigen::Vector3d p_world = T_w_1 * Eigen::Vector3d(p.x, p.y, p.z);
+
+    Eigen::Vector3d C1_w = kf1->getPose().translation();
+    Eigen::Vector3d C2_w = kf2->getPose().translation();
     Eigen::Vector3d ray1 = p_world - C1_w;
     Eigen::Vector3d ray2 = p_world - C2_w;
     double cos_parallax = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
@@ -609,8 +610,6 @@ void VisualFrontend::triangulateNewPoints(
     if (std::acos(cos_parallax) < 1.0 * M_PI / 180.0) {
       continue;
     }
-
-    Eigen::Vector3d p_world = T_w_1 * Eigen::Vector3d(p.x, p.y, p.z);
     MapPoint::Ptr mp = MapPoint::create(p_world);
 
     const cv::DMatch &m = matches_to_triangulate[i];
