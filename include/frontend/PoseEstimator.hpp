@@ -48,6 +48,14 @@ public:
   private:
     cv::Mat K_;
     cv::Mat dist_coeffs_;
+
+    // --- Algorithm parameters ---
+    static constexpr size_t kMinEssentialPoints = 5;
+    static constexpr size_t kMinPnPCorrespondences = 10;
+    static constexpr double kRansacConfidence = 0.99;
+    static constexpr double kEssentialThreshold = 1.0;   // pixels
+    static constexpr int kPnPIterations = 500;
+    static constexpr float kPnPReprojThreshold = 6.0f;   // pixels
 };
 
 } // namespace frontend

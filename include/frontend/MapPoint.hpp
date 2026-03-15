@@ -59,6 +59,8 @@ public:
 private:
   MapPoint(const Eigen::Vector3d &pos, size_t id);
   static size_t next_id_;
+
+  static constexpr size_t kMinObservations = 2;
 };
 
 } // namespace frontend

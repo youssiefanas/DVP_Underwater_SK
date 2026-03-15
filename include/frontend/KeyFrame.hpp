@@ -110,8 +110,10 @@ private:
   // Fast lookup
   std::map<KeyFrame::Ptr, int> covisibility_weights_;
 
-  // --- Static ID counter ---
   static size_t next_id_;
+
+  /// Minimum shared MapPoints to form a covisibility edge
+  static constexpr int kMinCovisibilityWeight = 5;
 };
 
 } // namespace frontend

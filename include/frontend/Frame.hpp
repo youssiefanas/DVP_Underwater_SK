@@ -48,29 +48,20 @@ public:
     std::vector<MapPoint::Ptr>& accessMapPoints(); // non-const access
     void ensureMapPointVectorSized(size_t n); // keep invariant
 
-public:
-    // Public Data Members (Optional: Keep public for easy access if you prefer struct-style)
-    // In strict OOP, these would be private, but for SLAM prototypes, public is common.
-    
-    // Pose: Transformation from World to Camera (T_c_w) or vice versa. 
-    // Left empty for now, but you will need this later.
-    Pose3d pose_{Pose3d::Identity()};
-
 private:
-    // Private constructor: forces users to use the createFrame() factory
     Frame(size_t id, double timestamp, const cv::Mat& image);
 
-    // Data
     size_t id_;
     double timestamp_;
     cv::Mat image_;
+    Pose3d pose_{Pose3d::Identity()};
 
-    // Features
     std::vector<cv::KeyPoint> keypoints_;
     cv::Mat descriptors_;
 
-    // MapPoints
     std::vector<MapPoint::Ptr> map_points_;
+
+    static size_t next_id_;
 };
 
 } // namespace frontend
