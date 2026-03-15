@@ -162,15 +162,26 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions& options) : rclcpp::Nod
         save_tum_trajectory_ ? tum_trajectory_path_.c_str() : "disabled",
         cv_rng_seed, cv_num_threads, image_queue_size,
         reliable_qos ? "reliable" : "best_effort");
+
+    std::ostringstream dist_coeffs_stream;
+    dist_coeffs_stream << dist_coeffs_;
+    RCLCPP_INFO(this->get_logger(), "dist_coeffs_: %s",
+                dist_coeffs_stream.str().c_str());
 }
 
 void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg) {
   try {
-    cv::Mat gray_image =
-        cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8)->image;
-    if (gray_image.empty()) {
+    cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvShare(msg);
+    if (cv_ptr->image.empty()) {
       RCLCPP_WARN(this->get_logger(), "Received empty image frame.");
       return;
+    }
+
+    cv::Mat gray_image;
+    if (cv_ptr->image.channels() == 1) {
+      gray_image = cv_ptr->image;
+    } else {
+      cv::cvtColor(cv_ptr->image, gray_image, cv::COLOR_BGR2GRAY);
     }
 
     cv::Mat frontend_image;
@@ -185,7 +196,8 @@ void VisualOdomNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPt
       frontend_image = gray_image;
     }
 
-    // CLAHE for contrast enhancement (helps feature detection in dark/bright areas)
+    // CLAHE for contrast enhancement (helps feature detection in dark/bright
+    // areas)
     auto clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
     clahe->apply(frontend_image, frontend_image);
 

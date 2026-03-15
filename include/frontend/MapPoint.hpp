@@ -16,6 +16,7 @@ class MapPoint {
 public:
   using Ptr = std::shared_ptr<MapPoint>;
   using KeyFramePtr = std::shared_ptr<KeyFrame>;
+  using KeyFrameWeakPtr = std::weak_ptr<KeyFrame>;
 
   /**
    * @brief Factory method.
@@ -34,7 +35,7 @@ public:
    * index. This is the core data structure for covisibility and GTSAM
    * projection factors.
    */
-  std::map<KeyFramePtr, size_t> observations_;
+  std::map<KeyFrameWeakPtr, size_t, std::owner_less<KeyFrameWeakPtr>> observations_;
 
   // --- Observation management ---
   void addObservation(const KeyFramePtr &kf, size_t keypoint_idx);

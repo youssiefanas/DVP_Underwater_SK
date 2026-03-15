@@ -15,7 +15,7 @@ namespace frontend {
 // Forward declare Frame so we don't create a circular dependency
 class Frame;
 
-class KeyFrame {
+class KeyFrame : public std::enable_shared_from_this<KeyFrame> {
 public:
   using Ptr = std::shared_ptr<KeyFrame>;
 
@@ -52,6 +52,12 @@ public:
    * non-bad) MapPoint.
    */
   size_t countMapPoints() const;
+
+  /**
+   * @brief Register this KeyFrame as an observer on all its valid MapPoints.
+   *        Must be called after create() so that shared_from_this() is valid.
+   */
+  void registerMapPointObservations();
 
   // --- Covisibility ---
   /**

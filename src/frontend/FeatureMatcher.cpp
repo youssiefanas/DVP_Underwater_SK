@@ -15,17 +15,21 @@ FeatureMatcher::FeatureMatcher(const std::string &matcher_type,
   }
 }
 
-std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr frame2) {
+std::vector<cv::DMatch> FeatureMatcher::match(const cv::Mat &desc1,
+                                               const cv::Mat &desc2,
+                                               float ratio_thresh) {
     std::vector<cv::DMatch> good_matches;
 
-    if (!frame1 || !frame2 || frame1->getDescriptors().empty() || frame2->getDescriptors().empty()) {
+    if (desc1.empty() || desc2.empty()) {
         return good_matches;
     }
+
+    const float thresh = (ratio_thresh > 0.0f) ? ratio_thresh : ratio_thresh_;
 
     std::vector<std::vector<cv::DMatch>> knn_matches;
 
     try {
-        matcher_->knnMatch(frame1->getDescriptors(), frame2->getDescriptors(), knn_matches, 2);
+        matcher_->knnMatch(desc1, desc2, knn_matches, 2);
     } catch (const cv::Exception& e) {
         std::cerr << "[FeatureMatcher] Error during matching: " << e.what() << std::endl;
         return good_matches;
@@ -34,11 +38,18 @@ std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr fram
     for (size_t i = 0; i < knn_matches.size(); i++) {
         if (knn_matches[i].size() < 2) continue;
 
-        if (knn_matches[i][0].distance < ratio_thresh_ * knn_matches[i][1].distance) {
+        if (knn_matches[i][0].distance < thresh * knn_matches[i][1].distance) {
             good_matches.push_back(knn_matches[i][0]);
         }
     }
     return good_matches;
+}
+
+std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr frame2) {
+    if (!frame1 || !frame2) {
+        return {};
+    }
+    return match(frame1->getDescriptors(), frame2->getDescriptors());
 }
 
 int FeatureMatcher::matchByProjection(

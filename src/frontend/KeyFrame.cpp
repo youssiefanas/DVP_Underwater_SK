@@ -38,6 +38,14 @@ KeyFrame::Ptr KeyFrame::create(std::shared_ptr<Frame> frame) {
     return kf;
 }
 
+void KeyFrame::registerMapPointObservations() {
+    for (size_t i = 0; i < map_points_.size(); i++) {
+        if (map_points_[i] && !map_points_[i]->isBad_) {
+            map_points_[i]->addObservation(shared_from_this(), i);
+        }
+    }
+}
+
 size_t KeyFrame::countMapPoints() const {
     size_t count = 0;
     for (const auto& mp : map_points_) {
@@ -46,11 +54,12 @@ size_t KeyFrame::countMapPoints() const {
     return count;
 }
 
-// void KeyFrame::addCovisibleKeyFrame(KeyFrame::Ptr kf, int weight) {
-//     // Unused
-//     if (!kf || kf.get() == this) return;
-//     covisibility_weights_[kf] = weight;
-// }
+void KeyFrame::addCovisibleKeyFrame(KeyFrame::Ptr kf, int weight) {
+  // Unused
+  if (!kf || kf.get() == this)
+    return;
+  covisibility_weights_[kf] = weight;
+}
 
 void KeyFrame::updateCovisibility() {
     // Count shared MapPoints with every other KeyFrame
@@ -60,9 +69,16 @@ void KeyFrame::updateCovisibility() {
         MapPoint::Ptr mp = map_points_[i];
         if (!mp || mp->isBad_) continue;
 
-        for (const auto& [obs_kf, obs_idx] : mp->observations_) {
-            if (obs_kf.get() == this) continue;   // skip self
-            kf_counter[obs_kf]++;
+        for (auto it = mp->observations_.begin(); it != mp->observations_.end(); ) {
+            auto obs_kf = it->first.lock();
+            if (!obs_kf) {
+                it = mp->observations_.erase(it);
+                continue;
+            }
+            if (obs_kf.get() != this) {
+                kf_counter[obs_kf]++;
+            }
+            ++it;
         }
     }
 

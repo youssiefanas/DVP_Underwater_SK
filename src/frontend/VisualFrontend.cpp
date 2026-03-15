@@ -70,6 +70,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   case Stage::NO_IMAGES_YET: {
     current_frame->setPose(gtsam::Pose3());
     last_keyframe_ = KeyFrame::create(current_frame);
+    last_keyframe_->registerMapPointObservations();
     reference_keyframe_ = last_keyframe_;
     map_->addKeyFrame(last_keyframe_);
     last_frame_ = current_frame;
@@ -94,7 +95,28 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     bool ok = tryInitialize(current_frame);
     if (ok) {
       stage_ = Stage::TRACKING;
+      last_frame_ = current_frame;
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
+      // } else if (frames_since_last_kf_ > kMaxInitFrames) {
+      //   // Reference KF is too stale — reset to current frame
+      //   current_frame->setPose(gtsam::Pose3());
+      //   last_keyframe_ = KeyFrame::create(current_frame);
+      //   last_keyframe_->registerMapPointObservations();
+      //   map_->addKeyFrame(last_keyframe_);
+      //   reference_keyframe_ = last_keyframe_;
+      //   frames_since_last_kf_ = 0;
+      //   last_frame_ = current_frame;
+
+      //   FrontendOutput output;
+      //   output.is_first_keyframe = true;
+      //   output.current_key = last_keyframe_->getPoseKey();
+      //   output.prior_pose = gtsam::Pose3();
+      //   output.initial_estimate = gtsam::Pose3();
+      //   output.timestamp = current_frame->getTimestamp();
+      //   pending_output_ = output;
+
+      //   std::cout << "[Frontend] Init reset → new ref KF "
+      //             << last_keyframe_->getId() << std::endl;
     }
     last_frame_ = current_frame;
     frames_since_last_kf_++;
@@ -137,24 +159,30 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     return false;
   }
 
-  std::vector<cv::DMatch> matches =
-      feature_matcher_->match(last_frame_, current_frame);
+  auto matches = feature_matcher_->match(last_keyframe_->getDescriptors(),
+                                         current_frame->getDescriptors(), 0.7f);
+
   if (matches.size() < 20)
     return false;
 
   std::vector<cv::Point2f> pts_prev, pts_curr;
+  std::vector<cv::DMatch> valid_matches;
   pts_prev.reserve(matches.size());
   pts_curr.reserve(matches.size());
+  valid_matches.reserve(matches.size());
   for (const auto &m : matches) {
     if (m.queryIdx < 0 || m.trainIdx < 0) {
       continue;
     }
-    if (static_cast<size_t>(m.queryIdx) >= last_frame_->getKeypoints().size() ||
-        static_cast<size_t>(m.trainIdx) >= current_frame->getKeypoints().size()) {
+    if (static_cast<size_t>(m.queryIdx) >=
+            last_keyframe_->getKeypoints().size() ||
+        static_cast<size_t>(m.trainIdx) >=
+            current_frame->getKeypoints().size()) {
       continue;
     }
-    pts_prev.push_back(last_frame_->getKeypoints()[m.queryIdx].pt);
+    pts_prev.push_back(last_keyframe_->getKeypoints()[m.queryIdx].pt);
     pts_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
+    valid_matches.push_back(m);
   }
   if (pts_prev.size() < 20) {
     return false;
@@ -165,15 +193,22 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     return false;
 
   int inlier_count = cv::countNonZero(mask);
-  if (inlier_count < 20)
+  if (inlier_count < 20) {
+    std::cout << "not enough inliers, inliers = " << inlier_count << std::endl;
     return false;
+  }
+
+  // Filter matches by geometric inlier mask
+  std::vector<cv::DMatch> inlier_matches;
+  inlier_matches.reserve(inlier_count);
+  for (int i = 0; i < mask.rows; i++) {
+    if (mask.at<uchar>(i))
+      inlier_matches.push_back(valid_matches[i]);
+  }
 
   // recoverPose returns T_curr_prev (x_curr = R*x_prev + t). We store T_w_c.
   gtsam::Pose3 T_curr_prev = cvToGtsam(R, t);
   gtsam::Pose3 T_prev_curr = T_curr_prev.inverse();
-  const double baseline_raw = T_prev_curr.translation().norm();
-  if (baseline_raw < kMinBaseline)
-    return false;
 
   if (std::abs(init_scale_ - 1.0) > 1e-12) {
     const auto t_scaled = T_prev_curr.translation() * init_scale_;
@@ -188,9 +223,10 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   current_frame->setPose(T_w_curr);
 
   KeyFrame::Ptr curr_kf = KeyFrame::create(current_frame);
+  curr_kf->registerMapPointObservations();
   size_t map_points_before = map_->numMapPoints();
   map_->addKeyFrame(curr_kf);
-  triangulateNewPoints(last_keyframe_, curr_kf);
+  triangulateNewPoints(last_keyframe_, curr_kf, inlier_matches);
 
   size_t created = map_->numMapPoints() - map_points_before;
   if ((int)created < kMinInitMapPoints) {
@@ -231,8 +267,8 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   frames_since_last_kf_ = 0;
 
   std::cout << "[Frontend Init] KF " << curr_kf->getId()
-            << " | baseline=" << baseline << " (raw=" << baseline_raw << ")"
-            << " | MPs=" << map_->numMapPoints() << std::endl;
+            << " | baseline=" << baseline << " | MPs=" << map_->numMapPoints()
+            << std::endl;
   return true;
 }
 
@@ -306,32 +342,24 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
 
   // Phase 3: Relocalization against reference KF
   if ((int)total_tracked < kMinProjectionMatches && reference_keyframe_) {
-    std::vector<std::vector<cv::DMatch>> knn_matches;
-    auto matcher = cv::DescriptorMatcher::create("BruteForce-Hamming");
-    if (!reference_keyframe_->getDescriptors().empty() &&
-        !current_frame->getDescriptors().empty()) {
-      matcher->knnMatch(reference_keyframe_->getDescriptors(),
-                        current_frame->getDescriptors(), knn_matches, 2);
-      for (const auto &knn : knn_matches) {
-        if (knn.size() < 2)
-          continue;
-        if (knn[0].distance < 0.7f * knn[1].distance) {
-          size_t kf_idx = knn[0].queryIdx;
-          size_t fr_idx = knn[0].trainIdx;
-          if (fr_idx >= current_frame->accessMapPoints().size())
-            continue;
-          if (current_frame->accessMapPoints()[fr_idx])
-            continue;
-          if (kf_idx < reference_keyframe_->getMapPoints().size()) {
-            MapPoint::Ptr mp = reference_keyframe_->getMapPoints()[kf_idx];
-            if (mp && !mp->isBad_) {
-              current_frame->accessMapPoints()[fr_idx] = mp;
-            }
-          }
+    auto reloc_matches =
+        feature_matcher_->match(reference_keyframe_->getDescriptors(),
+                                current_frame->getDescriptors(), 0.7f);
+    for (const auto &m : reloc_matches) {
+      size_t kf_idx = m.queryIdx;
+      size_t fr_idx = m.trainIdx;
+      if (fr_idx >= current_frame->accessMapPoints().size())
+        continue;
+      if (current_frame->accessMapPoints()[fr_idx])
+        continue;
+      if (kf_idx < reference_keyframe_->getMapPoints().size()) {
+        MapPoint::Ptr mp = reference_keyframe_->getMapPoints()[kf_idx];
+        if (mp && !mp->isBad_) {
+          current_frame->accessMapPoints()[fr_idx] = mp;
         }
       }
-      total_tracked = countTrackedMapPoints(current_frame);
     }
+    total_tracked = countTrackedMapPoints(current_frame);
   }
 
   if ((int)total_tracked < kMinPnPInliers) {
@@ -426,6 +454,7 @@ bool VisualFrontend::shouldInsertKeyFrame(Frame::Ptr current_frame) const {
 
 void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
   KeyFrame::Ptr new_kf = KeyFrame::create(current_frame);
+  new_kf->registerMapPointObservations();
   map_->addKeyFrame(new_kf);
   triangulateNewPoints(last_keyframe_, new_kf);
   new_kf->updateCovisibility();
@@ -460,26 +489,21 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
 
 void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
                                           KeyFrame::Ptr kf2) {
-  if (!kf1 || !kf2) {
+  if (!kf1 || !kf2)
     return;
-  }
-  if (kf1->getDescriptors().empty() || kf2->getDescriptors().empty()) {
+  if (kf1->getDescriptors().empty() || kf2->getDescriptors().empty())
     return;
-  }
 
-  std::vector<std::vector<cv::DMatch>> knn_matches;
-  auto matcher = cv::DescriptorMatcher::create("BruteForce-Hamming");
-  matcher->knnMatch(kf1->getDescriptors(), kf2->getDescriptors(), knn_matches,
-                    2);
+  auto good_matches = feature_matcher_->match(kf1->getDescriptors(),
+                                              kf2->getDescriptors(), 0.7f);
 
-  std::vector<cv::DMatch> good_matches;
-  for (const auto &knn : knn_matches) {
-    if (knn.size() < 2)
-      continue;
-    if (knn[0].distance < 0.7f * knn[1].distance)
-      good_matches.push_back(knn[0]);
-  }
-  if (good_matches.empty())
+  triangulateNewPoints(kf1, kf2, good_matches);
+}
+
+void VisualFrontend::triangulateNewPoints(
+    KeyFrame::Ptr kf1, KeyFrame::Ptr kf2,
+    const std::vector<cv::DMatch> &good_matches) {
+  if (!kf1 || !kf2 || good_matches.empty())
     return;
 
   std::vector<cv::Point2f> pts1, pts2;
@@ -526,8 +550,9 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
     return;
 
   gtsam::Pose3 T_w_1 = kf1->getPose();
+  gtsam::Pose3 T_w_2 = kf2->getPose();
   // For triangulatePoints with pts1->pts2, P2 must be T_2_1 (cam1 -> cam2).
-  gtsam::Pose3 T_2_1 = kf2->getPose().inverse() * kf1->getPose();
+  gtsam::Pose3 T_2_1 = T_w_2.inverse() * T_w_1;
 
   Eigen::Matrix3d R_eigen = T_2_1.rotation().matrix();
   Eigen::Vector3d t_eigen = T_2_1.translation();
@@ -540,6 +565,10 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
 
   std::vector<cv::Point3f> points_3d;
   pose_estimator_->triangulate(pts1, pts2, K_, R_cv, t_cv, points_3d);
+
+  // Camera centers in world frame for parallax computation
+  const gtsam::Point3 &C1_w = T_w_1.translation();
+  const gtsam::Point3 &C2_w = T_w_2.translation();
 
   size_t created = 0;
   for (size_t i = 0; i < points_3d.size() && i < matches_to_triangulate.size();
@@ -557,13 +586,16 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
     if (cv::norm(pt) > 50.0)
       continue;
 
-    cv::Mat b1 = pt / cv::norm(pt);
-    cv::Mat b2 = pt_2 / cv::norm(pt_2);
-    double dot_val = std::max(-1.0, std::min(1.0, b1.dot(b2)));
-    if (std::acos(dot_val) < 1.0 * M_PI / 180.0)
+    // Parallax: angle between rays from each camera center to the 3D point
+    // Both rays must be in the same (world) frame for a valid dot product
+    gtsam::Point3 p_world = T_w_1.transformFrom(gtsam::Point3(p.x, p.y, p.z));
+    gtsam::Point3 ray1 = p_world - C1_w;
+    gtsam::Point3 ray2 = p_world - C2_w;
+    double cos_parallax = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
+    cos_parallax = std::max(-1.0, std::min(1.0, cos_parallax));
+    if (std::acos(cos_parallax) < 1.0 * M_PI / 180.0)
       continue;
 
-    gtsam::Point3 p_world = T_w_1.transformFrom(gtsam::Point3(p.x, p.y, p.z));
     MapPoint::Ptr mp = MapPoint::create(
         Eigen::Vector3d(p_world.x(), p_world.y(), p_world.z()));
 

@@ -24,11 +24,11 @@ MapPoint::Ptr MapPoint::create(const Eigen::Vector3d& pos) {
 void MapPoint::addObservation(const KeyFramePtr &kf, size_t keypoint_idx) {
   if (!kf)
     return;
-  observations_[kf] = keypoint_idx;
+  observations_[std::weak_ptr<KeyFrame>(kf)] = keypoint_idx;
 }
 
 void MapPoint::removeObservation(const KeyFramePtr &kf) {
-  if (observations_.erase(kf) > 0) {
+  if (observations_.erase(std::weak_ptr<KeyFrame>(kf)) > 0) {
     // If we have < 2 observations, point is unreliable → mark bad
     if (observations_.size() < 2) {
       isBad_ = true;
@@ -49,10 +49,17 @@ void MapPoint::computeDistinctiveDescriptor() {
   std::vector<cv::Mat> descriptors;
   descriptors.reserve(observations_.size());
 
-  for (const auto &[kf, idx] : observations_) {
+  for (auto it = observations_.begin(); it != observations_.end(); ) {
+    auto kf = it->first.lock();
+    if (!kf) {
+      it = observations_.erase(it);
+      continue;
+    }
+    size_t idx = it->second;
     if (idx < (size_t)kf->getDescriptors().rows) {
       descriptors.push_back(kf->getDescriptors().row((int)idx));
     }
+    ++it;
   }
 
   if (descriptors.empty())
