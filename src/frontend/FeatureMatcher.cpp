@@ -1,4 +1,5 @@
 #include "frontend/FeatureMatcher.hpp"
+#include "dv_slam/utility.hpp"
 #include <iostream>
 #include <gtsam/geometry/Point3.h>
 
@@ -62,7 +63,10 @@ int FeatureMatcher::matchByProjection(
   frame->ensureMapPointVectorSized(frame->getKeypoints().size());
 
   int matches = 0;
-  gtsam::Pose3 T_c_w = T_w_c.inverse();
+  // Manual inverse: T_c_w = T_w_c^{-1} (GTSAM ABI workaround)
+  Rt wc = extractRt(T_w_c);
+  Eigen::Matrix3d R_cw = wc.R.transpose();
+  Eigen::Vector3d t_cw = -wc.R.transpose() * wc.t;
 
   double fx = K.at<double>(0, 0), fy = K.at<double>(1, 1);
   double cx = K.at<double>(0, 2), cy = K.at<double>(1, 2);
@@ -81,7 +85,7 @@ int FeatureMatcher::matchByProjection(
       continue; // Guard: need a descriptor to match
 
     // 1. Transform to camera frame
-    gtsam::Point3 p_cam = T_c_w.transformFrom(gtsam::Point3(mp->position_));
+    Eigen::Vector3d p_cam = R_cw * mp->position_ + t_cw;
     if (p_cam.z() <= 0.1)
       continue; // Behind camera or too close
 

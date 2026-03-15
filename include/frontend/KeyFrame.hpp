@@ -4,6 +4,7 @@
 #include <set>
 #include <vector>
 
+#include <Eigen/Core>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/inference/Symbol.h>
 #include <opencv2/core.hpp>
@@ -18,6 +19,7 @@ class Frame;
 class KeyFrame : public std::enable_shared_from_this<KeyFrame> {
 public:
   using Ptr = std::shared_ptr<KeyFrame>;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   /**
    * @brief Factory: promote a Frame into a KeyFrame.

@@ -8,6 +8,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 
+#include "dv_slam/utility.hpp"
 #include "FeatureExtractor.hpp"
 #include "FeatureMatcher.hpp"
 #include "Frame.hpp"
@@ -156,7 +157,7 @@ private:
     Map::Ptr map_;
 
     // --- Velocity model (for pose prediction) ---
-    gtsam::Pose3 velocity_; // T_{k-1, k} relative transform
+    Rt velocity_; // T_{k-1, k} relative transform (manual, avoids GTSAM ABI issue)
     bool has_velocity_ = false;
     int consecutive_failures_ = 0;
 

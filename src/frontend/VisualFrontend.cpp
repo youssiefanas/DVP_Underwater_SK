@@ -51,6 +51,10 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
 
 void VisualFrontend::extractFeatures(Frame::Ptr frame) {
   feature_extractor_->extract(*frame);
+  std::cout << "[DBG Extract] Frame " << frame->getId()
+            << " | keypoints=" << frame->getKeypoints().size()
+            << " | descriptors=" << frame->getDescriptors().rows
+            << "x" << frame->getDescriptors().cols << std::endl;
 }
 
 std::optional<FrontendOutput> VisualFrontend::consumeBackendOutput() {
@@ -68,7 +72,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   switch (stage_) {
 
   case Stage::NO_IMAGES_YET: {
-    current_frame->setPose(gtsam::Pose3());
+    current_frame->setPose(identityPose());
     last_keyframe_ = KeyFrame::create(current_frame);
     last_keyframe_->registerMapPointObservations();
     reference_keyframe_ = last_keyframe_;
@@ -81,8 +85,8 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     FrontendOutput output;
     output.is_first_keyframe = true;
     output.current_key = last_keyframe_->getPoseKey();
-    output.prior_pose = gtsam::Pose3();
-    output.initial_estimate = gtsam::Pose3();
+    output.prior_pose = identityPose();
+    output.initial_estimate = identityPose();
     output.timestamp = current_frame->getTimestamp();
     pending_output_ = output;
 
@@ -99,7 +103,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
       // } else if (frames_since_last_kf_ > kMaxInitFrames) {
       //   // Reference KF is too stale — reset to current frame
-      //   current_frame->setPose(gtsam::Pose3());
+      //   current_frame->setPose(identityPose());
       //   last_keyframe_ = KeyFrame::create(current_frame);
       //   last_keyframe_->registerMapPointObservations();
       //   map_->addKeyFrame(last_keyframe_);
@@ -110,8 +114,8 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
       //   FrontendOutput output;
       //   output.is_first_keyframe = true;
       //   output.current_key = last_keyframe_->getPoseKey();
-      //   output.prior_pose = gtsam::Pose3();
-      //   output.initial_estimate = gtsam::Pose3();
+      //   output.prior_pose = identityPose();
+      //   output.initial_estimate = identityPose();
       //   output.timestamp = current_frame->getTimestamp();
       //   pending_output_ = output;
 
@@ -127,7 +131,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     bool ok = track(current_frame);
     if (ok) {
       if (last_frame_) {
-        velocity_ = last_frame_->getPose().inverse() * current_frame->getPose();
+        velocity_ = relativeRt(current_frame->getPose(), last_frame_->getPose());
         has_velocity_ = true;
       }
       last_frame_ = current_frame;
@@ -159,9 +163,15 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     return false;
   }
 
+  std::cout << "[DBG Init] ref KF " << last_keyframe_->getId()
+            << " desc=" << last_keyframe_->getDescriptors().rows
+            << " | curr Frame " << current_frame->getId()
+            << " desc=" << current_frame->getDescriptors().rows << std::endl;
+
   auto matches = feature_matcher_->match(last_keyframe_->getDescriptors(),
                                          current_frame->getDescriptors(), 0.7f);
 
+  std::cout << "[DBG Init] raw matches=" << matches.size() << std::endl;
   if (matches.size() < 20)
     return false;
 
@@ -184,51 +194,125 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     pts_curr.push_back(current_frame->getKeypoints()[m.trainIdx].pt);
     valid_matches.push_back(m);
   }
+  std::cout << "[DBG Init] valid_matches=" << valid_matches.size() << std::endl;
   if (pts_prev.size() < 20) {
     return false;
   }
 
   cv::Mat R, t, mask;
-  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask))
+  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask)) {
+    std::cout << "[DBG Init] pose_estimator->estimate() FAILED" << std::endl;
     return false;
+  }
 
   int inlier_count = cv::countNonZero(mask);
+  std::cout << "[DBG Init] E-matrix inliers=" << inlier_count
+            << " / " << valid_matches.size() << std::endl;
   if (inlier_count < 20) {
-    std::cout << "not enough inliers, inliers = " << inlier_count << std::endl;
+    std::cout << "[DBG Init] not enough inliers" << std::endl;
     return false;
   }
 
-  // Filter matches by geometric inlier mask
+  // Filter matches AND points by geometric inlier mask
   std::vector<cv::DMatch> inlier_matches;
+  std::vector<cv::Point2f> pts_prev_inlier, pts_curr_inlier;
   inlier_matches.reserve(inlier_count);
+  pts_prev_inlier.reserve(inlier_count);
+  pts_curr_inlier.reserve(inlier_count);
   for (int i = 0; i < mask.rows; i++) {
-    if (mask.at<uchar>(i))
+    if (mask.at<uchar>(i)) {
       inlier_matches.push_back(valid_matches[i]);
+      pts_prev_inlier.push_back(pts_prev[i]);
+      pts_curr_inlier.push_back(pts_curr[i]);
+    }
+  }
+  std::cout << "[DBG Init] inlier_matches=" << inlier_matches.size() << std::endl;
+
+  // recoverPose returns T_curr_prev: x_curr = R * x_prev + t
+  // Manual inverse: T_prev_curr = (R^T, -R^T * t)  [GTSAM ABI workaround]
+  cv::Mat R_d, t_d;
+  R.convertTo(R_d, CV_64F);
+  t.convertTo(t_d, CV_64F);
+
+  Eigen::Matrix3d R_eig;
+  Eigen::Vector3d t_eig;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++)
+      R_eig(i, j) = R_d.at<double>(i, j);
+    t_eig(i) = t_d.at<double>(i);
   }
 
-  // recoverPose returns T_curr_prev (x_curr = R*x_prev + t). We store T_w_c.
-  gtsam::Pose3 T_curr_prev = cvToGtsam(R, t);
-  gtsam::Pose3 T_prev_curr = T_curr_prev.inverse();
+  Eigen::Matrix3d R_pc = R_eig.transpose();
+  Eigen::Vector3d t_pc = -R_eig.transpose() * t_eig;
 
   if (std::abs(init_scale_ - 1.0) > 1e-12) {
-    const auto t_scaled = T_prev_curr.translation() * init_scale_;
-    T_prev_curr =
-        gtsam::Pose3(T_prev_curr.rotation(),
-                     gtsam::Point3(t_scaled.x(), t_scaled.y(), t_scaled.z()));
+    t_pc *= init_scale_;
   }
-  double baseline = T_prev_curr.translation().norm();
+  double baseline = t_pc.norm();
 
-  gtsam::Pose3 T_w_prev = last_keyframe_->getPose();
-  gtsam::Pose3 T_w_curr = T_w_prev * T_prev_curr;
+  // Compose T_w_curr = T_w_prev * T_prev_curr manually
+  Rt p_prev = extractRt(last_keyframe_->getPose());
+  Eigen::Matrix3d R_curr = p_prev.R * R_pc;
+  Eigen::Vector3d t_curr = p_prev.R * t_pc + p_prev.t;
+  gtsam::Pose3 T_w_curr{gtsam::Rot3(R_curr), gtsam::Point3(t_curr)};
   current_frame->setPose(T_w_curr);
+
+  // Build relative pose for backend BetweenFactor
+  gtsam::Pose3 T_prev_curr{gtsam::Rot3(R_pc), gtsam::Point3(t_pc)};
 
   KeyFrame::Ptr curr_kf = KeyFrame::create(current_frame);
   curr_kf->registerMapPointObservations();
-  size_t map_points_before = map_->numMapPoints();
   map_->addKeyFrame(curr_kf);
-  triangulateNewPoints(last_keyframe_, curr_kf, inlier_matches);
 
-  size_t created = map_->numMapPoints() - map_points_before;
+  // ── Triangulate using ORIGINAL R,t from recoverPose (bypass GTSAM) ──
+  // P1 = K*[I|0], P2 = K*[R|t]  →  output in cam1 frame = world frame
+  std::vector<cv::Point3f> points_3d;
+  pose_estimator_->triangulate(pts_prev_inlier, pts_curr_inlier, K_,
+                               R_d, t_d, points_3d);
+
+  // cam2 center in world (=cam1) frame: C2 = -R^T * t
+  Eigen::Vector3d C2_w = -R_eig.transpose() * t_eig;
+
+  std::cout << "[DBG Init Tri] raw 3D pts=" << points_3d.size()
+            << " | C2_w=" << C2_w.transpose() << std::endl;
+
+  size_t created = 0;
+  size_t rej_nan = 0, rej_d1 = 0, rej_d2 = 0, rej_dist = 0, rej_par = 0;
+  for (size_t i = 0; i < points_3d.size() && i < inlier_matches.size(); i++) {
+    const auto &p = points_3d[i];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      rej_nan++;
+      continue;
+    }
+    cv::Mat pt = (cv::Mat_<double>(3, 1) << p.x, p.y, p.z);
+    if (pt.at<double>(2) <= 0) { rej_d1++; continue; }
+
+    cv::Mat pt_2 = R_d * pt + t_d;   // use original R,t
+    if (pt_2.at<double>(2) <= 0) { rej_d2++; continue; }
+
+    if (cv::norm(pt) > 50.0) { rej_dist++; continue; }
+
+    // Parallax in world=cam1 frame
+    Eigen::Vector3d P_w(p.x, p.y, p.z);
+    Eigen::Vector3d ray1 = P_w;           // cam1 at origin
+    Eigen::Vector3d ray2 = P_w - C2_w;    // cam2 center
+    double cos_par = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
+    cos_par = std::max(-1.0, std::min(1.0, cos_par));
+    if (std::acos(cos_par) < 1.0 * M_PI / 180.0) { rej_par++; continue; }
+
+    MapPoint::Ptr mp = MapPoint::create(P_w);
+    const auto &m = inlier_matches[i];
+    mp->addObservation(last_keyframe_, m.queryIdx);
+    mp->addObservation(curr_kf, m.trainIdx);
+    last_keyframe_->accessMapPoints()[m.queryIdx] = mp;
+    curr_kf->accessMapPoints()[m.trainIdx] = mp;
+    mp->computeDistinctiveDescriptor();
+    map_->addMapPoint(mp);
+    created++;
+  }
+  std::cout << "[DBG Init Tri] rej: nan=" << rej_nan << " d1=" << rej_d1
+            << " d2=" << rej_d2 << " dist=" << rej_dist
+            << " par=" << rej_par << " | created=" << created << std::endl;
   if ((int)created < kMinInitMapPoints) {
     for (auto &mp : curr_kf->accessMapPoints()) {
       if (!mp)
@@ -290,7 +374,12 @@ bool VisualFrontend::track(Frame::Ptr current_frame) {
 
 void VisualFrontend::predictPose(Frame::Ptr current_frame) {
   if (has_velocity_ && last_frame_) {
-    current_frame->setPose(last_frame_->getPose() * velocity_);
+    // Manual compose: T_w_curr = T_w_prev * velocity (GTSAM ABI workaround)
+    Rt prev = extractRt(last_frame_->getPose());
+    Eigen::Matrix3d R_pred = prev.R * velocity_.R;
+    Eigen::Vector3d t_pred = prev.R * velocity_.t + prev.t;
+    current_frame->setPose(
+        gtsam::Pose3(gtsam::Rot3(R_pred), gtsam::Point3(t_pred)));
   } else if (last_frame_) {
     current_frame->setPose(last_frame_->getPose());
   }
@@ -399,14 +488,15 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     }
   }
 
-  gtsam::Pose3 T_pred_curr = predicted_pose.inverse() * current_frame->getPose();
-  double pose_jump_t = T_pred_curr.translation().norm();
+  // Manual relative pose for jump detection (GTSAM ABI workaround)
+  Rt T_pred_curr = relativeRt(current_frame->getPose(), predicted_pose);
+  double pose_jump_t = T_pred_curr.t.norm();
   double pose_jump_rot_deg =
-      Eigen::AngleAxisd(T_pred_curr.rotation().matrix()).angle() * 180.0 / M_PI;
+      Eigen::AngleAxisd(T_pred_curr.R).angle() * 180.0 / M_PI;
 
   double max_jump_t = kMaxPoseJumpTranslation;
   if (has_velocity_) {
-    double predicted_step_t = velocity_.translation().norm();
+    double predicted_step_t = velocity_.t.norm();
     max_jump_t = std::max(max_jump_t, 4.0 * predicted_step_t + 0.05);
   }
   double max_jump_rot_deg = kMaxPoseJumpRotationDeg;
@@ -439,13 +529,13 @@ bool VisualFrontend::shouldInsertKeyFrame(Frame::Ptr current_frame) const {
   if ((int)tracked < kMinTrackedMapPoints)
     return ((int)tracked >= kMinTrackedForNewKF);
 
-  gtsam::Pose3 T_kf_curr =
-      last_keyframe_->getPose().inverse() * current_frame->getPose();
-  double baseline = T_kf_curr.translation().norm();
+  // Manual relative pose (GTSAM ABI workaround)
+  Rt T_kf_curr = relativeRt(current_frame->getPose(), last_keyframe_->getPose());
+  double baseline = T_kf_curr.t.norm();
   if (baseline > kMinBaseline)
     return true;
 
-  Eigen::AngleAxisd aa(T_kf_curr.rotation().matrix());
+  Eigen::AngleAxisd aa(T_kf_curr.R);
   if (aa.angle() * 180.0 / M_PI > kMinRotationDeg)
     return true;
 
@@ -465,8 +555,9 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
   // EMIT BETWEEN FACTOR FOR GTSAM BACKEND
   // This is the key output that feeds the fixed-lag smoother.
   // ──────────────────────────────────────────────────────
+  // Manual relative pose (GTSAM ABI workaround)
   gtsam::Pose3 relative_pose =
-      last_keyframe_->getPose().inverse() * new_kf->getPose();
+      safeRelativePose(new_kf->getPose(), last_keyframe_->getPose());
 
   FrontendOutput output;
   output.is_first_keyframe = false;
@@ -503,34 +594,47 @@ void VisualFrontend::triangulateNewPoints(KeyFrame::Ptr kf1,
 void VisualFrontend::triangulateNewPoints(
     KeyFrame::Ptr kf1, KeyFrame::Ptr kf2,
     const std::vector<cv::DMatch> &good_matches) {
-  if (!kf1 || !kf2 || good_matches.empty())
+  if (!kf1 || !kf2 || good_matches.empty()) {
+    std::cout << "[DBG Tri] early exit: kf1=" << (bool)kf1
+              << " kf2=" << (bool)kf2
+              << " matches=" << good_matches.size() << std::endl;
     return;
+  }
+
+  size_t skip_bad_idx = 0, skip_oob_mp = 0, skip_oob_kp = 0;
+  size_t skip_both_have = 0, propagated_1to2 = 0, propagated_2to1 = 0;
 
   std::vector<cv::Point2f> pts1, pts2;
   std::vector<cv::DMatch> matches_to_triangulate;
   for (const auto &m : good_matches) {
     if (m.queryIdx < 0 || m.trainIdx < 0) {
+      skip_bad_idx++;
       continue;
     }
     const size_t idx1 = static_cast<size_t>(m.queryIdx);
     const size_t idx2 = static_cast<size_t>(m.trainIdx);
     if (idx1 >= kf1->getMapPoints().size() || idx2 >= kf2->getMapPoints().size()) {
+      skip_oob_mp++;
       continue;
     }
     if (idx1 >= kf1->getKeypoints().size() || idx2 >= kf2->getKeypoints().size()) {
+      skip_oob_kp++;
       continue;
     }
 
     bool has1 = (kf1->getMapPoints()[idx1] != nullptr);
     bool has2 = (kf2->getMapPoints()[idx2] != nullptr);
 
-    if (has1 && has2)
+    if (has1 && has2) {
+      skip_both_have++;
       continue;
+    }
     if (has1 && !has2) {
       MapPoint::Ptr mp = kf1->getMapPoints()[idx1];
       if (mp && !mp->isBad_) {
         mp->addObservation(kf2, idx2);
         kf2->accessMapPoints()[idx2] = mp;
+        propagated_1to2++;
       }
       continue;
     }
@@ -539,6 +643,7 @@ void VisualFrontend::triangulateNewPoints(
       if (mp && !mp->isBad_) {
         mp->addObservation(kf1, idx1);
         kf1->accessMapPoints()[idx1] = mp;
+        propagated_2to1++;
       }
       continue;
     }
@@ -546,58 +651,86 @@ void VisualFrontend::triangulateNewPoints(
     pts2.push_back(kf2->getKeypoints()[idx2].pt);
     matches_to_triangulate.push_back(m);
   }
+
+  std::cout << "[DBG Tri] input=" << good_matches.size()
+            << " | bad_idx=" << skip_bad_idx
+            << " oob_mp=" << skip_oob_mp
+            << " oob_kp=" << skip_oob_kp
+            << " both_have=" << skip_both_have
+            << " prop_1→2=" << propagated_1to2
+            << " prop_2→1=" << propagated_2to1
+            << " | to_triangulate=" << matches_to_triangulate.size() << std::endl;
+
   if (pts1.empty())
     return;
 
-  gtsam::Pose3 T_w_1 = kf1->getPose();
-  gtsam::Pose3 T_w_2 = kf2->getPose();
-  // For triangulatePoints with pts1->pts2, P2 must be T_2_1 (cam1 -> cam2).
-  gtsam::Pose3 T_2_1 = T_w_2.inverse() * T_w_1;
+  // Compute relative pose manually (GTSAM ABI workaround — see utility.hpp)
+  Rt rel = relativeRt(kf1->getPose(), kf2->getPose());
+  Rt p1 = extractRt(kf1->getPose());
+  Rt p2 = extractRt(kf2->getPose());
 
-  Eigen::Matrix3d R_eigen = T_2_1.rotation().matrix();
-  Eigen::Vector3d t_eigen = T_2_1.translation();
   cv::Mat R_cv(3, 3, CV_64F), t_cv(3, 1, CV_64F);
   for (int i = 0; i < 3; i++) {
     for (int j = 0; j < 3; j++)
-      R_cv.at<double>(i, j) = R_eigen(i, j);
-    t_cv.at<double>(i) = t_eigen(i);
+      R_cv.at<double>(i, j) = rel.R(i, j);
+    t_cv.at<double>(i) = rel.t(i);
   }
 
   std::vector<cv::Point3f> points_3d;
   pose_estimator_->triangulate(pts1, pts2, K_, R_cv, t_cv, points_3d);
 
+  // Print first few raw 3D points for diagnosis
+  std::cout << "[DBG Tri] triangulated " << points_3d.size()
+            << " raw 3D points, first 3:" << std::endl;
+  for (size_t i = 0; i < std::min(points_3d.size(), (size_t)3); i++) {
+    std::cout << "  pt[" << i << "] = (" << points_3d[i].x << ", "
+              << points_3d[i].y << ", " << points_3d[i].z << ")" << std::endl;
+  }
+
   // Camera centers in world frame for parallax computation
-  const gtsam::Point3 &C1_w = T_w_1.translation();
-  const gtsam::Point3 &C2_w = T_w_2.translation();
+  const Eigen::Vector3d &C1_w = p1.t;
+  const Eigen::Vector3d &C2_w = p2.t;
 
   size_t created = 0;
+  size_t rej_nan = 0, rej_depth1 = 0, rej_depth2 = 0, rej_dist = 0, rej_parallax = 0;
   for (size_t i = 0; i < points_3d.size() && i < matches_to_triangulate.size();
        i++) {
     const cv::Point3f &p = points_3d[i];
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      rej_nan++;
       continue;
+    }
     cv::Mat pt = (cv::Mat_<double>(3, 1) << p.x, p.y, p.z);
 
-    if (pt.at<double>(2) <= 0)
+    if (pt.at<double>(2) <= 0) {
+      rej_depth1++;
       continue;
+    }
     cv::Mat pt_2 = R_cv * pt + t_cv;
-    if (pt_2.at<double>(2) <= 0)
+    if (pt_2.at<double>(2) <= 0) {
+      rej_depth2++;
       continue;
-    if (cv::norm(pt) > 50.0)
+    }
+    if (cv::norm(pt) > 50.0) {
+      rej_dist++;
       continue;
+    }
 
     // Parallax: angle between rays from each camera center to the 3D point
     // Both rays must be in the same (world) frame for a valid dot product
-    gtsam::Point3 p_world = T_w_1.transformFrom(gtsam::Point3(p.x, p.y, p.z));
-    gtsam::Point3 ray1 = p_world - C1_w;
-    gtsam::Point3 ray2 = p_world - C2_w;
+    // p_world = R1 * p_cam1 + t1 (manual, avoids GTSAM ABI issue)
+    Eigen::Vector3d p_cam1(p.x, p.y, p.z);
+    Eigen::Vector3d p_world = p1.R * p_cam1 + p1.t;
+    Eigen::Vector3d ray1 = p_world - C1_w;
+    Eigen::Vector3d ray2 = p_world - C2_w;
     double cos_parallax = ray1.dot(ray2) / (ray1.norm() * ray2.norm());
     cos_parallax = std::max(-1.0, std::min(1.0, cos_parallax));
-    if (std::acos(cos_parallax) < 1.0 * M_PI / 180.0)
+    if (std::acos(cos_parallax) < 1.0 * M_PI / 180.0) {
+      rej_parallax++;
       continue;
+    }
 
-    MapPoint::Ptr mp = MapPoint::create(
-        Eigen::Vector3d(p_world.x(), p_world.y(), p_world.z()));
+    MapPoint::Ptr mp = MapPoint::create(p_world);
 
     const cv::DMatch &m = matches_to_triangulate[i];
     mp->addObservation(kf1, m.queryIdx);
@@ -609,6 +742,12 @@ void VisualFrontend::triangulateNewPoints(
     created++;
   }
 
+  std::cout << "[DBG Tri] rejections: nan=" << rej_nan
+            << " depth1=" << rej_depth1
+            << " depth2=" << rej_depth2
+            << " dist=" << rej_dist
+            << " parallax=" << rej_parallax
+            << " | created=" << created << std::endl;
   std::cout << "[Frontend] Triangulated " << created
             << " new MapPoints between KF " << kf1->getId() << " and KF "
             << kf2->getId() << std::endl;

@@ -17,6 +17,7 @@ public:
   using Ptr = std::shared_ptr<MapPoint>;
   using KeyFramePtr = std::shared_ptr<KeyFrame>;
   using KeyFrameWeakPtr = std::weak_ptr<KeyFrame>;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   /**
    * @brief Factory method.

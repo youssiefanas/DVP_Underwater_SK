@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 
+#include <Eigen/Core>
 #include <gtsam/geometry/Pose3.h>
 #include <opencv2/core.hpp>
 
@@ -15,6 +16,8 @@ public:
     // Typedefs for easy shared pointer usage (Standard in ROS/SLAM)
     using Ptr = std::shared_ptr<Frame>;
     using ConstPtr = std::shared_ptr<const Frame>;
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     /**
      * @brief Factory method to create a new Frame.

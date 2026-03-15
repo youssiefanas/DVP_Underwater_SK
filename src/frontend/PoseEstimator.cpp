@@ -73,19 +73,17 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
     return false;
   }
 
-  // Convert current pose T_w_c (GTSAM) to OpenCV T_c_w (camera-from-world)
-  gtsam::Pose3 T_w_c = frame->getPose();
-  gtsam::Pose3 T_c_w = T_w_c.inverse();
-
-  Eigen::Matrix3d R_eigen = T_c_w.rotation().matrix();
-  Eigen::Vector3d t_eigen = T_c_w.translation();
+  // Convert current pose T_w_c to T_c_w manually (GTSAM ABI workaround)
+  Rt wc = extractRt(frame->getPose());
+  Eigen::Matrix3d R_cw = wc.R.transpose();
+  Eigen::Vector3d t_cw = -wc.R.transpose() * wc.t;
 
   cv::Mat R_cv(3, 3, CV_64F);
   cv::Mat t_cv(3, 1, CV_64F);
   for (int i = 0; i < 3; i++) {
     for (int j = 0; j < 3; j++)
-      R_cv.at<double>(i, j) = R_eigen(i, j);
-    t_cv.at<double>(i) = t_eigen(i);
+      R_cv.at<double>(i, j) = R_cw(i, j);
+    t_cv.at<double>(i) = t_cw(i);
   }
 
   cv::Mat rvec;
@@ -120,11 +118,19 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
     }
   }
 
-  // Convert refined pose back: T_c_w → T_w_c
+  // Convert refined T_c_w back to T_w_c manually (GTSAM ABI workaround)
   cv::Mat R_refined;
   cv::Rodrigues(rvec, R_refined);
-  gtsam::Pose3 T_c_w_refined = cvToGtsam(R_refined, t_cv);
-  frame->setPose(T_c_w_refined.inverse());
+  Eigen::Matrix3d R_ref, R_wc_ref;
+  Eigen::Vector3d t_ref, t_wc_ref;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++)
+      R_ref(i, j) = R_refined.at<double>(i, j);
+    t_ref(i) = t_cv.at<double>(i);
+  }
+  R_wc_ref = R_ref.transpose();
+  t_wc_ref = -R_ref.transpose() * t_ref;
+  frame->setPose(gtsam::Pose3(gtsam::Rot3(R_wc_ref), gtsam::Point3(t_wc_ref)));
 
   return true;
 }

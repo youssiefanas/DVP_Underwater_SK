@@ -1,4 +1,5 @@
 #include "frontend/Frame.hpp"
+#include "dv_slam/utility.hpp"
 
 namespace frontend {
 
@@ -7,7 +8,7 @@ static size_t current_frame_id = 0;
 
 Frame::Frame(size_t id, double timestamp, const cv::Mat& image)
     : id_(id), timestamp_(timestamp), image_(image.clone()) {
-    pose_ = gtsam::Pose3();
+    pose_ = identityPose();
 }
 
 Frame::Ptr Frame::createFrame(const cv::Mat& image, double timestamp) {
