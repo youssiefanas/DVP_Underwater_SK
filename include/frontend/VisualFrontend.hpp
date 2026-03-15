@@ -131,6 +131,47 @@ private:
      */
     size_t countTrackedMapPoints(Frame::Ptr frame) const;
 
+    /**
+     * @brief Filter matches by index validity and bounds, and extract
+     *        corresponding 2D point pairs.
+     * @return Filtered matches; pts1/pts2 are populated in lockstep.
+     */
+    static std::vector<cv::DMatch> extractValidMatchedPoints(
+        const std::vector<cv::DMatch> &matches,
+        const std::vector<cv::KeyPoint> &kps1,
+        const std::vector<cv::KeyPoint> &kps2,
+        std::vector<cv::Point2f> &pts1,
+        std::vector<cv::Point2f> &pts2);
+
+    /**
+     * @brief Validate a triangulated 3D point: finite, positive depth in both
+     *        cameras, within max distance, and sufficient parallax angle.
+     */
+    static bool isTriangulatedPointValid(
+        const cv::Point3f &p, const cv::Mat &R_cv, const cv::Mat &t_cv,
+        const Eigen::Vector3d &cam1_world, const Eigen::Vector3d &cam2_world,
+        const Pose3d &T_w_ref, double max_distance, double min_parallax_deg);
+
+    /// Propagate MapPoints from last_frame_ to current_frame via matching.
+    size_t propagateMapPoints(Frame::Ptr current_frame);
+
+    /// Relocate against reference keyframe when projection matching is weak.
+    void relocateFromReferenceKF(Frame::Ptr current_frame);
+
+    /// Run PnP with inlier threshold check. Returns false on failure.
+    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers);
+
+    /// Reject implausible pose jumps relative to the predicted pose.
+    bool validatePoseJump(const Pose3d &predicted_pose,
+                          const Pose3d &actual_pose, int pnp_inliers) const;
+
+    /// Emit a FrontendOutput for the backend to consume.
+    void emitBackendOutput(bool is_first, const Pose3d &relative,
+                           const Pose3d &estimate, double timestamp);
+
+    /// Undo a failed initialization: mark MapPoints bad and remove KF.
+    void rollbackFailedInitialization(KeyFrame::Ptr curr_kf);
+
 private:
     // --- State Management ---
     Stage stage_;
@@ -163,35 +204,29 @@ private:
     std::optional<FrontendOutput> pending_output_;
 
     // --- KeyFrame insertion parameters ---
-    // Potential Future Work: Move these to a config file.
     int frames_since_last_kf_ = 0;
-    static constexpr int kMinFramesBetweenKF = 5;    // Don't insert KF too fast
-    // static constexpr int kMinInitMapPoints = 40;     // Reject weak
-    // initialization static constexpr int kMinTrackedMapPoints = 50;  // If
-    // below this → force KF
-    static constexpr double kMinBaseline = 0.15;     // meters
-    static constexpr double kMinRotationDeg = 10.0;  // degrees
+    static constexpr int kMinFramesBetweenKF = 5;
+    static constexpr double kMinBaseline = 0.15;      // meters
+    static constexpr double kMinRotationDeg = 10.0;   // degrees
 
-    // --- Projection matching parameters ---
-    // static constexpr int kMinProjectionMatches = 20; // Min matches to trust
-    // PnP static constexpr int kMinPnPInliers = 25;        // Reject weak PnP
-    // solutions static constexpr int kStrongPnPInliers = 80;     // Allow
-    // larger motion if very strong static constexpr float kSearchRadius
-    // = 25.0f;    // pixels static constexpr float kSearchRadiusWide = 50.0f;//
-    // fallback wider search static constexpr int kMinTrackedForNewKF = 35;   //
-    // Avoid weak keyframe insertion
-    static constexpr double kMaxPoseJumpTranslation = 0.20; // meters (map scale)
-    static constexpr double kMaxPoseJumpRotationDeg = 12.0; // degrees
+    // --- Tracking / PnP parameters ---
+    static constexpr double kMaxPoseJumpTranslation = 0.20; // meters
+    static constexpr double kMaxPoseJumpRotationDeg = 12.0;  // degrees
     static constexpr int kMaxConsecutiveFailures = 10;
+    static constexpr int kMinInitMapPoints = 25;
+    static constexpr int kMinTrackedMapPoints = 30;
+    static constexpr int kMinProjectionMatches = 12;
+    static constexpr int kMinPnPInliers = 15;
+    static constexpr int kStrongPnPInliers = 50;
+    static constexpr float kSearchRadius = 40.0f;     // pixels
+    static constexpr float kSearchRadiusWide = 80.0f;  // pixels, fallback
+    static constexpr int kMinTrackedForNewKF = 20;
 
-    static constexpr int kMinInitMapPoints = 25;      // was 40
-    static constexpr int kMinTrackedMapPoints = 30;   // was 50
-    static constexpr int kMinProjectionMatches = 12;  // was 20
-    static constexpr int kMinPnPInliers = 15;         // was 25
-    static constexpr int kStrongPnPInliers = 50;      // was 80
-    static constexpr float kSearchRadius = 40.0f;     // was 25.0f
-    static constexpr float kSearchRadiusWide = 80.0f; // was 50.0f
-    static constexpr int kMinTrackedForNewKF = 20;    // was 35
+    // --- Triangulation quality thresholds ---
+    static constexpr float kMatchRatioThreshold = 0.7f;
+    static constexpr double kMaxTriangulationDist = 50.0;  // map units
+    static constexpr double kMinParallaxDeg = 1.0;         // degrees
+    static constexpr size_t kMinMatchesForInit = 20;
 };
 
 } // namespace frontend
