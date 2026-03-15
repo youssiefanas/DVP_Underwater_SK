@@ -25,8 +25,20 @@ public:
     ~FeatureMatcher() = default;
 
     /**
+     * @brief Match raw descriptor matrices.
+     *
+     * @param desc1 Query descriptors
+     * @param desc2 Train descriptors
+     * @param ratio_thresh Override ratio test threshold (<=0 uses instance
+     * default)
+     * @return std::vector<cv::DMatch> List of good matches
+     */
+    std::vector<cv::DMatch> match(const cv::Mat &desc1, const cv::Mat &desc2,
+                                  float ratio_thresh = -1.0f);
+
+    /**
      * @brief Match descriptors between two frames.
-     * 
+     *
      * @param frame1 Previous frame (query)
      * @param frame2 Current frame (train)
      * @return std::vector<cv::DMatch> List of good matches
@@ -47,7 +59,7 @@ public:
      */
     int matchByProjection(Frame::Ptr frame,
                           const std::vector<MapPoint::Ptr> &map_points,
-                          const cv::Mat &K, const gtsam::Pose3 &T_w_c,
+                          const cv::Mat &K, const Pose3d &T_w_c,
                           float search_radius = 15.0f);
 
   private:

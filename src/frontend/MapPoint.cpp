@@ -4,8 +4,6 @@
 #include <climits>
 #include <vector>
 
-#include <gtsam/inference/Symbol.h>
-
 #include "frontend/KeyFrame.hpp"
 
 namespace frontend {
@@ -15,9 +13,8 @@ size_t MapPoint::next_id_ = 0;
 MapPoint::MapPoint(const Eigen::Vector3d &pos, size_t id)
     : id_(id), position_(pos) {}
 
-MapPoint::Ptr MapPoint::create(const Eigen::Vector3d& pos) {
-  Ptr mp(new MapPoint(pos, next_id_));
-  next_id_++;
+MapPoint::Ptr MapPoint::create(const Eigen::Vector3d &pos) {
+  Ptr mp(new MapPoint(pos, next_id_++));
   return mp;
 }
 
@@ -29,8 +26,7 @@ void MapPoint::addObservation(const KeyFramePtr &kf, size_t keypoint_idx) {
 
 void MapPoint::removeObservation(const KeyFramePtr &kf) {
   if (observations_.erase(kf) > 0) {
-    // If we have < 2 observations, point is unreliable → mark bad
-    if (observations_.size() < 2) {
+    if (observations_.size() < kMinObservations) {
       isBad_ = true;
     }
   }
@@ -50,8 +46,8 @@ void MapPoint::computeDistinctiveDescriptor() {
   descriptors.reserve(observations_.size());
 
   for (const auto &[kf, idx] : observations_) {
-    if (idx < (size_t)kf->getDescriptors().rows) {
-      descriptors.push_back(kf->getDescriptors().row((int)idx));
+    if (idx < static_cast<size_t>(kf->getDescriptors().rows)) {
+      descriptors.push_back(kf->getDescriptors().row(static_cast<int>(idx)));
     }
   }
 
@@ -62,10 +58,9 @@ void MapPoint::computeDistinctiveDescriptor() {
     return;
   }
 
-  // Compute pairwise distances, pick descriptor with min median distance
-  // This ensures the descriptor is the most "central" or "representative"
-  // of the set, rejecting outliers.
-  size_t N = descriptors.size();
+  // Pick the descriptor with minimum median Hamming distance to all others
+  // (most "central" descriptor, robust to outliers)
+  const size_t N = descriptors.size();
   std::vector<std::vector<int>> distances(N, std::vector<int>(N, 0));
   for (size_t i = 0; i < N; i++) {
     for (size_t j = i + 1; j < N; j++) {
@@ -89,7 +84,5 @@ void MapPoint::computeDistinctiveDescriptor() {
 
   descriptor_ = descriptors[best_idx].clone();
 }
-
-gtsam::Key MapPoint::getLandmarkKey() const { return gtsam::Symbol('l', id_); }
 
 } // namespace frontend

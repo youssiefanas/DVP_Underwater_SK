@@ -3,74 +3,104 @@
 #include <memory>
 #include <vector>
 
-#include <gtsam/geometry/Pose3.h>
 #include <opencv2/core.hpp>
 
 #include "MapPoint.hpp"
+#include "Pose3d.hpp"
 
 namespace frontend {
 
+/**
+ * @brief A single image observation with extracted features and associated map data.
+ *
+ * Frames are the fundamental unit of visual input in the SLAM frontend.
+ * Each frame stores a grayscale image, its detected keypoints and descriptors,
+ * a camera pose (T_world_camera), and a vector of MapPoint associations that
+ * is kept in 1:1 correspondence with the keypoints vector.
+ *
+ * Frames are created exclusively through the createFrame() factory method,
+ * which assigns a monotonically increasing ID.
+ */
 class Frame {
 public:
-    // Typedefs for easy shared pointer usage (Standard in ROS/SLAM)
     using Ptr = std::shared_ptr<Frame>;
     using ConstPtr = std::shared_ptr<const Frame>;
 
     /**
-     * @brief Factory method to create a new Frame.
-     * Use this instead of 'new Frame(...)' to ensure ID is auto-incremented safely.
+     * @brief Factory method to create a new Frame with an auto-incremented ID.
+     * @param image    Grayscale input image (will be deep-copied internally).
+     * @param timestamp  Capture time of the image, in seconds.
+     * @return Shared pointer to the newly created Frame.
      */
     static Frame::Ptr createFrame(const cv::Mat& image, double timestamp);
 
-    // Destructor
     ~Frame() = default;
 
-    // --- Setters and Getters ---
-
-    // Set extracted features (Keypoints and Descriptors)
+    /**
+     * @brief Store extracted keypoints and descriptors for this frame.
+     *
+     * Resets the MapPoint association vector to the same size as @p kps,
+     * filled with nullptrs, to maintain the 1:1 invariant.
+     *
+     * @param kps  Detected keypoints.
+     * @param des  Corresponding descriptor matrix (one row per keypoint).
+     */
     void setFeatures(const std::vector<cv::KeyPoint>& kps, const cv::Mat& des);
 
-    
+    /// @brief Get the unique sequential ID of this frame.
     size_t getId() const;
+
+    /// @brief Get the capture timestamp in seconds.
     double getTimestamp() const;
+
+    /// @brief Get the stored grayscale image.
     const cv::Mat& getImage() const;
 
-    // Pose Getter/Setter
-    const gtsam::Pose3& getPose() const;
-    void setPose(const gtsam::Pose3& pose);
+    /// @brief Get the current world-to-camera pose (T_world_camera).
+    const Pose3d& getPose() const;
 
-    // Feature access
+    /**
+     * @brief Set the camera pose in world coordinates.
+     * @param pose  The SE(3) transform T_world_camera.
+     */
+    void setPose(const Pose3d& pose);
+
+    /// @brief Get the detected keypoints (read-only).
     const std::vector<cv::KeyPoint>& getKeypoints() const;
+
+    /// @brief Get the descriptor matrix (read-only).
     const cv::Mat& getDescriptors() const;
 
-    // MapPoint access: one-to-one with keypoints_
+    /// @brief Get the MapPoint associations, one per keypoint (read-only).
     const std::vector<MapPoint::Ptr>& getMapPoints() const;
-    std::vector<MapPoint::Ptr>& accessMapPoints(); // non-const access
-    void ensureMapPointVectorSized(size_t n); // keep invariant
 
-public:
-    // Public Data Members (Optional: Keep public for easy access if you prefer struct-style)
-    // In strict OOP, these would be private, but for SLAM prototypes, public is common.
-    
-    // Pose: Transformation from World to Camera (T_c_w) or vice versa. 
-    // Left empty for now, but you will need this later.
-    gtsam::Pose3 pose_; 
+    /// @brief Get mutable access to the MapPoint associations vector.
+    std::vector<MapPoint::Ptr>& accessMapPoints();
+
+    /**
+     * @brief Ensure the MapPoint vector is at least @p n elements long.
+     *
+     * Pads with nullptr if the current size is smaller than @p n.
+     * Used to maintain the 1:1 invariant when keypoints are added externally.
+     *
+     * @param n  Minimum required size.
+     */
+    void ensureMapPointVectorSized(size_t n);
 
 private:
-    // Private constructor: forces users to use the createFrame() factory
     Frame(size_t id, double timestamp, const cv::Mat& image);
 
-    // Data
     size_t id_;
     double timestamp_;
     cv::Mat image_;
+    Pose3d pose_{Pose3d::Identity()};
 
-    // Features
     std::vector<cv::KeyPoint> keypoints_;
     cv::Mat descriptors_;
 
-    // MapPoints
     std::vector<MapPoint::Ptr> map_points_;
+
+    static size_t next_id_;
 };
 
 } // namespace frontend

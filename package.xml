@@ -16,7 +16,6 @@
   <depend>geometry_msgs</depend>
   <depend>image_transport</depend>
   <depend>std_msgs</depend>
-  <depend>gtsam</depend>
   <depend>Eigen3</depend>
 
   <depend>OpenCV</depend>
