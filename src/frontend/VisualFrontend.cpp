@@ -70,7 +70,8 @@ bool VisualFrontend::isTriangulatedPointValid(
 // ─────────────────────────────────────────────────────────────────
 
 VisualFrontend::VisualFrontend(const ORBParams &params, const cv::Mat &K,
-                               double init_scale, bool enable_viewer)
+                               const cv::Mat &dist_coeffs, double init_scale,
+                               bool enable_viewer)
     : stage_(Stage::NO_IMAGES_YET), init_scale_(init_scale) {
   if (init_scale_ <= 0.0) {
     std::cerr << "[Frontend] Invalid init_scale (" << init_scale_
@@ -83,7 +84,7 @@ VisualFrontend::VisualFrontend(const ORBParams &params, const cv::Mat &K,
   }
   feature_matcher_ = std::make_shared<FeatureMatcher>(params.matcher_type);
   pose_estimator_ = std::make_shared<PoseEstimator>();
-  pose_estimator_->setIntrinsics(K);
+  pose_estimator_->setIntrinsics(K, dist_coeffs);
   K_ = K.clone();
   map_ = std::make_shared<Map>();
 }
@@ -145,6 +146,8 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     output.prior_pose = last_good_pose_;
     output.initial_estimate = last_good_pose_;
     output.timestamp = current_frame->getTimestamp();
+    // Tight prior: first KF defines the origin
+    output.pose_covariance = Eigen::Matrix<double, 6, 6>::Identity() * 1e-6;
     pending_output_ = output;
 
     std::cout << "[Frontend] First frame → KF " << last_keyframe_->getId()
@@ -403,9 +406,10 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     return false;
   }
 
-  // Phase 4: PnP
+  // Phase 4: PnP (with covariance estimation)
   int pnp_inliers = 0;
-  if (!solvePnP(current_frame, pnp_inliers))
+  Eigen::Matrix<double, 6, 6> covariance;
+  if (!solvePnP(current_frame, pnp_inliers, &covariance))
     return false;
 
   // Phase 5: Post-PnP re-project with refined pose
@@ -414,10 +418,12 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     int extra = feature_matcher_->matchByProjection(
         current_frame, local_mps, K_, current_frame->getPose(), kSearchRadius);
     if (extra > 0) {
-      if (!solvePnP(current_frame, pnp_inliers))
+      if (!solvePnP(current_frame, pnp_inliers, &covariance))
         return false;
     }
   }
+
+  last_covariance_ = covariance;
 
   // Phase 6: Reject implausible pose jumps
   if (!validatePoseJump(predicted_pose, current_frame->getPose(), pnp_inliers))
@@ -480,8 +486,10 @@ void VisualFrontend::relocateFromReferenceKF(Frame::Ptr current_frame) {
   }
 }
 
-bool VisualFrontend::solvePnP(Frame::Ptr current_frame, int &pnp_inliers) {
-  if (!pose_estimator_->estimateRefined(current_frame, &pnp_inliers)) {
+bool VisualFrontend::solvePnP(Frame::Ptr current_frame, int &pnp_inliers,
+                              Eigen::Matrix<double, 6, 6> *covariance) {
+  if (!pose_estimator_->estimateRefined(current_frame, &pnp_inliers,
+                                        covariance)) {
     std::cout << "[Frontend] PnP failed (inliers=" << pnp_inliers << ")"
               << std::endl;
     return false;
@@ -559,7 +567,7 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
   Pose3d relative_pose =
       last_keyframe_->getPose().inverse() * new_kf->getPose();
   emitBackendOutput(false, relative_pose, new_kf->getPose(),
-                    current_frame->getTimestamp());
+                    current_frame->getTimestamp(), last_covariance_);
 
   reference_keyframe_ = new_kf;
   last_keyframe_ = new_kf;
@@ -571,14 +579,15 @@ void VisualFrontend::insertKeyFrame(Frame::Ptr current_frame) {
             << " | Map MPs: " << map_->numMapPoints() << std::endl;
 }
 
-void VisualFrontend::emitBackendOutput(bool is_first, const Pose3d &relative,
-                                       const Pose3d &estimate,
-                                       double timestamp) {
+void VisualFrontend::emitBackendOutput(
+    bool is_first, const Pose3d &relative, const Pose3d &estimate,
+    double timestamp, const Eigen::Matrix<double, 6, 6> &covariance) {
   FrontendOutput output;
   output.is_first_keyframe = is_first;
   output.relative_pose = relative;
   output.initial_estimate = estimate;
   output.timestamp = timestamp;
+  output.pose_covariance = covariance;
   if (is_first)
     output.prior_pose = relative;
   pending_output_ = output;
@@ -824,6 +833,12 @@ size_t VisualFrontend::countTrackedMapPoints(Frame::Ptr frame) const {
 }
 
 Frame::Ptr VisualFrontend::getLatestFrame() const { return last_frame_; }
+
+std::optional<FrontendOutput> VisualFrontend::consumeBackendOutput() {
+  auto out = std::move(pending_output_);
+  pending_output_.reset();
+  return out;
+}
 KeyFrame::Ptr VisualFrontend::getLatestKeyFrame() const {
   return last_keyframe_;
 }

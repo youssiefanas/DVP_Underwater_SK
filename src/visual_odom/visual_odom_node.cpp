@@ -28,7 +28,7 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
   configureCameraModel();
 
   visual_frontend_ = std::make_shared<frontend::VisualFrontend>(
-      orb_params, K_, init_scale, enable_viewer_);
+      orb_params, K_, dist_coeffs_, init_scale, enable_viewer_);
 
   clahe_ = cv::createCLAHE(kClaheClipLimit,
                             cv::Size(kClaheTileSize, kClaheTileSize));
@@ -42,6 +42,8 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
 
   path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
       "trajectory", kTrajectoryPubQueueSize);
+  odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(
+      "odometry", kTrajectoryPubQueueSize);
   path_msg_.header.frame_id = "map";
 
   RCLCPP_INFO(this->get_logger(), "Visual Odom Node initialized. topic=%s",
@@ -234,7 +236,8 @@ void VisualOdomNode::imageCallback(
 
     auto frame = visual_frontend_->getLatestFrame();
     if (frame) {
-      publishAndLogPose(msg->header.stamp, frame->getPose());
+      publishAndLogPose(msg->header.stamp, frame->getPose(),
+                        visual_frontend_->getLastCovariance());
     }
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
@@ -279,33 +282,51 @@ cv::Mat VisualOdomNode::preprocessImage(const cv::Mat &raw) {
 
 void VisualOdomNode::publishAndLogPose(
     const builtin_interfaces::msg::Time &stamp,
-    const frontend::Pose3d &pose) {
-  auto pose_msg = toPoseStamped(stamp, pose);
+    const frontend::Pose3d &pose,
+    const Eigen::Matrix<double, 6, 6> &covariance) {
+  auto odom_msg = toOdometry(stamp, pose, covariance * 100);
+  odom_pub_->publish(odom_msg);
 
+  // Path only accepts PoseStamped — extract from odometry
+  geometry_msgs::msg::PoseStamped pose_stamped;
+  pose_stamped.header = odom_msg.header;
+  pose_stamped.pose = odom_msg.pose.pose;
   path_msg_.header.stamp = stamp;
-  path_msg_.poses.push_back(pose_msg);
+  path_msg_.poses.push_back(pose_stamped);
   path_pub_->publish(path_msg_);
 
   appendTumPose(rclcpp::Time(stamp), pose);
 }
 
-geometry_msgs::msg::PoseStamped VisualOdomNode::toPoseStamped(
+nav_msgs::msg::Odometry VisualOdomNode::toOdometry(
     const builtin_interfaces::msg::Time &stamp,
-    const frontend::Pose3d &pose) {
-  geometry_msgs::msg::PoseStamped msg;
+    const frontend::Pose3d &pose,
+    const Eigen::Matrix<double, 6, 6> &covariance) {
+  nav_msgs::msg::Odometry msg;
   msg.header.stamp = stamp;
   msg.header.frame_id = "map";
+  msg.child_frame_id = "camera";
 
   const auto &t = pose.translation();
-  msg.pose.position.x = t.x();
-  msg.pose.position.y = t.y();
-  msg.pose.position.z = t.z();
+  msg.pose.pose.position.x = t.x();
+  msg.pose.pose.position.y = t.y();
+  msg.pose.pose.position.z = t.z();
 
   const Eigen::Quaterniond q(pose.linear());
-  msg.pose.orientation.x = q.x();
-  msg.pose.orientation.y = q.y();
-  msg.pose.orientation.z = q.z();
-  msg.pose.orientation.w = q.w();
+  msg.pose.pose.orientation.x = q.x();
+  msg.pose.pose.orientation.y = q.y();
+  msg.pose.pose.orientation.z = q.z();
+  msg.pose.pose.orientation.w = q.w();
+
+  // ROS covariance is row-major 6x6: [trans(3), rot(3)]
+  // Our covariance is [rot(3), trans(3)] — reorder to ROS convention
+  for (int i = 0; i < 6; i++) {
+    for (int j = 0; j < 6; j++) {
+      int ri = i < 3 ? i + 3 : i - 3;
+      int rj = j < 3 ? j + 3 : j - 3;
+      msg.pose.covariance[ri * 6 + rj] = covariance(i, j);
+    }
+  }
 
   return msg;
 }
