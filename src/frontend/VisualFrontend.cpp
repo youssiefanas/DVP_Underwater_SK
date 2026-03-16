@@ -120,6 +120,10 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
 
 void VisualFrontend::extractFeatures(Frame::Ptr frame) {
   feature_extractor_->extract(*frame);
+  std::cout << "[DBG Extract] Frame " << frame->getId()
+            << " | keypoints=" << frame->getKeypoints().size()
+            << " | descriptors=" << frame->getDescriptors().rows
+            << "x" << frame->getDescriptors().cols << std::endl;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -161,6 +165,26 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
       stage_ = Stage::TRACKING;
       last_frame_ = current_frame;
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
+      // } else if (frames_since_last_kf_ > kMaxInitFrames) {
+      //   // Reference KF is too stale — reset to current frame
+      //   current_frame->setPose(identityPose());
+      //   last_keyframe_ = KeyFrame::create(current_frame);
+      //   last_keyframe_->registerMapPointObservations();
+      //   map_->addKeyFrame(last_keyframe_);
+      //   reference_keyframe_ = last_keyframe_;
+      //   frames_since_last_kf_ = 0;
+      //   last_frame_ = current_frame;
+
+      //   FrontendOutput output;
+      //   output.is_first_keyframe = true;
+      //   output.current_key = last_keyframe_->getPoseKey();
+      //   output.prior_pose = identityPose();
+      //   output.initial_estimate = identityPose();
+      //   output.timestamp = current_frame->getTimestamp();
+      //   pending_output_ = output;
+
+      //   std::cout << "[Frontend] Init reset → new ref KF "
+      //             << last_keyframe_->getId() << std::endl;
     }
     frames_since_last_kf_++;
     return ok;
@@ -246,12 +270,15 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
 
   // Essential matrix estimation
   cv::Mat R, t, mask;
-  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask))
+  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask)) {
+    std::cout << "[DBG Init] pose_estimator->estimate() FAILED" << std::endl;
     return false;
+  }
 
   int inlier_count = cv::countNonZero(mask);
   if (static_cast<size_t>(inlier_count) < kMinMatchesForInit)
     return false;
+  }
 
   // recoverPose returns T_curr_prev (x_curr = R*x_prev + t). We store T_w_c.
   Pose3d T_prev_curr = cvToPose3d(R, t).inverse();
@@ -278,11 +305,14 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
     Eigen::Vector3d t_scaled = T_prev_curr.translation() * init_scale_;
     T_prev_curr = makePose(T_prev_curr.linear(), t_scaled);
   }
-  double baseline = T_prev_curr.translation().norm();
+  double baseline = t_pc.norm();
 
   Pose3d T_w_prev = last_keyframe_->getPose();
   Pose3d T_w_curr = T_w_prev * T_prev_curr;
   current_frame->setPose(T_w_curr);
+
+  // Build relative pose for backend BetweenFactor
+  gtsam::Pose3 T_prev_curr{gtsam::Rot3(R_pc), gtsam::Point3(t_pc)};
 
   KeyFrame::Ptr curr_kf = KeyFrame::create(current_frame);
   curr_kf->registerMapPointObservations();
@@ -339,8 +369,8 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
   frames_since_last_kf_ = 0;
 
   std::cout << "[Frontend Init] KF " << curr_kf->getId()
-            << " | baseline=" << baseline << " (raw=" << baseline_raw << ")"
-            << " | MPs=" << map_->numMapPoints() << std::endl;
+            << " | baseline=" << baseline << " | MPs=" << map_->numMapPoints()
+            << std::endl;
   return true;
 }
 
@@ -363,7 +393,12 @@ bool VisualFrontend::track(Frame::Ptr current_frame) {
 
 void VisualFrontend::predictPose(Frame::Ptr current_frame) {
   if (has_velocity_ && last_frame_) {
-    current_frame->setPose(last_frame_->getPose() * velocity_);
+    // Manual compose: T_w_curr = T_w_prev * velocity (GTSAM ABI workaround)
+    Rt prev = extractRt(last_frame_->getPose());
+    Eigen::Matrix3d R_pred = prev.R * velocity_.R;
+    Eigen::Vector3d t_pred = prev.R * velocity_.t + prev.t;
+    current_frame->setPose(
+        gtsam::Pose3(gtsam::Rot3(R_pred), gtsam::Point3(t_pred)));
   } else if (last_frame_) {
     current_frame->setPose(last_frame_->getPose());
   }
@@ -512,7 +547,7 @@ bool VisualFrontend::validatePoseJump(const Pose3d &predicted_pose,
 
   double max_jump_t = kMaxPoseJumpTranslation;
   if (has_velocity_) {
-    double predicted_step_t = velocity_.translation().norm();
+    double predicted_step_t = velocity_.t.norm();
     max_jump_t = std::max(max_jump_t, 4.0 * predicted_step_t + 0.05);
   }
   double max_jump_rot_deg = kMaxPoseJumpRotationDeg;
@@ -732,6 +767,10 @@ void VisualFrontend::triangulateNewPoints(
     const std::vector<cv::DMatch> &good_matches) {
   if (!kf1 || !kf2 || good_matches.empty())
     return;
+  }
+
+  size_t skip_bad_idx = 0, skip_oob_mp = 0, skip_oob_kp = 0;
+  size_t skip_both_have = 0, propagated_1to2 = 0, propagated_2to1 = 0;
 
   std::vector<cv::Point2f> pts1, pts2;
   std::vector<cv::DMatch> matches_to_triangulate;
@@ -750,7 +789,8 @@ void VisualFrontend::triangulateNewPoints(
     bool has1 = (kf1->getMapPoints()[idx1] != nullptr);
     bool has2 = (kf2->getMapPoints()[idx2] != nullptr);
 
-    if (has1 && has2)
+    if (has1 && has2) {
+      skip_both_have++;
       continue;
 
     // Propagate existing MapPoint to the other keyframe
@@ -759,6 +799,7 @@ void VisualFrontend::triangulateNewPoints(
       if (mp && !mp->isBad_) {
         mp->addObservation(kf2, idx2);
         kf2->accessMapPoints()[idx2] = mp;
+        propagated_1to2++;
       }
       continue;
     }
@@ -767,6 +808,7 @@ void VisualFrontend::triangulateNewPoints(
       if (mp && !mp->isBad_) {
         mp->addObservation(kf1, idx1);
         kf1->accessMapPoints()[idx1] = mp;
+        propagated_2to1++;
       }
       continue;
     }
@@ -776,6 +818,16 @@ void VisualFrontend::triangulateNewPoints(
     pts2.push_back(kf2->getKeypoints()[idx2].pt);
     matches_to_triangulate.push_back(m);
   }
+
+  std::cout << "[DBG Tri] input=" << good_matches.size()
+            << " | bad_idx=" << skip_bad_idx
+            << " oob_mp=" << skip_oob_mp
+            << " oob_kp=" << skip_oob_kp
+            << " both_have=" << skip_both_have
+            << " prop_1→2=" << propagated_1to2
+            << " prop_2→1=" << propagated_2to1
+            << " | to_triangulate=" << matches_to_triangulate.size() << std::endl;
+
   if (pts1.empty())
     return;
 
@@ -799,6 +851,7 @@ void VisualFrontend::triangulateNewPoints(
                                   T_w_1, kMaxTriangulationDist,
                                   kMinParallaxDeg))
       continue;
+    }
 
     const auto &p = points_3d[i];
     Eigen::Vector3d p_world = T_w_1 * Eigen::Vector3d(p.x, p.y, p.z);
@@ -814,6 +867,12 @@ void VisualFrontend::triangulateNewPoints(
     created++;
   }
 
+  std::cout << "[DBG Tri] rejections: nan=" << rej_nan
+            << " depth1=" << rej_depth1
+            << " depth2=" << rej_depth2
+            << " dist=" << rej_dist
+            << " parallax=" << rej_parallax
+            << " | created=" << created << std::endl;
   std::cout << "[Frontend] Triangulated " << created
             << " new MapPoints between KF " << kf1->getId() << " and KF "
             << kf2->getId() << std::endl;

@@ -31,6 +31,8 @@ class MapPoint {
 public:
   using Ptr = std::shared_ptr<MapPoint>;
   using KeyFramePtr = std::shared_ptr<KeyFrame>;
+  using KeyFrameWeakPtr = std::weak_ptr<KeyFrame>;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   /**
    * @brief Create a new MapPoint at the given 3D position.
@@ -51,7 +53,7 @@ public:
    * keypoints/descriptors vectors. This is the core structure for
    * covisibility computation and GTSAM projection factors.
    */
-  std::map<KeyFramePtr, size_t> observations_;
+  std::map<KeyFrameWeakPtr, size_t, std::owner_less<KeyFrameWeakPtr>> observations_;
 
   /**
    * @brief Register a KeyFrame as an observer of this MapPoint.

@@ -7,6 +7,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 
+#include "dv_slam/utility.hpp"
 #include "FeatureExtractor.hpp"
 #include "FeatureMatcher.hpp"
 #include "Frame.hpp"

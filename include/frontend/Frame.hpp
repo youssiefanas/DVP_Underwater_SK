@@ -26,6 +26,8 @@ public:
     using Ptr = std::shared_ptr<Frame>;
     using ConstPtr = std::shared_ptr<const Frame>;
 
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     /**
      * @brief Factory method to create a new Frame with an auto-incremented ID.
      * @param image    Grayscale input image (will be deep-copied internally).

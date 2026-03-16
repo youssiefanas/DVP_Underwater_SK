@@ -1,4 +1,5 @@
 #include "frontend/FeatureMatcher.hpp"
+#include "dv_slam/utility.hpp"
 #include <iostream>
 
 namespace frontend {
@@ -52,6 +53,13 @@ std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1,
     return {};
   }
   return match(frame1->getDescriptors(), frame2->getDescriptors());
+}
+
+std::vector<cv::DMatch> FeatureMatcher::match(Frame::Ptr frame1, Frame::Ptr frame2) {
+    if (!frame1 || !frame2) {
+        return {};
+    }
+    return match(frame1->getDescriptors(), frame2->getDescriptors());
 }
 
 int FeatureMatcher::matchByProjection(

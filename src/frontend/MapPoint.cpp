@@ -21,7 +21,7 @@ MapPoint::Ptr MapPoint::create(const Eigen::Vector3d &pos) {
 void MapPoint::addObservation(const KeyFramePtr &kf, size_t keypoint_idx) {
   if (!kf)
     return;
-  observations_[kf] = keypoint_idx;
+  observations_[std::weak_ptr<KeyFrame>(kf)] = keypoint_idx;
 }
 
 void MapPoint::removeObservation(const KeyFramePtr &kf) {
@@ -49,6 +49,7 @@ void MapPoint::computeDistinctiveDescriptor() {
     if (idx < static_cast<size_t>(kf->getDescriptors().rows)) {
       descriptors.push_back(kf->getDescriptors().row(static_cast<int>(idx)));
     }
+    ++it;
   }
 
   if (descriptors.empty())

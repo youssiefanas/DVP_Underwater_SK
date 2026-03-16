@@ -1,4 +1,5 @@
 #include "frontend/Frame.hpp"
+#include "dv_slam/utility.hpp"
 
 namespace frontend {
 

@@ -28,6 +28,7 @@ class Frame;
 class KeyFrame : public std::enable_shared_from_this<KeyFrame> {
 public:
   using Ptr = std::shared_ptr<KeyFrame>;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   /**
    * @brief Factory: promote a Frame into a KeyFrame.
