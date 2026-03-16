@@ -7,6 +7,7 @@
 #include "cv_bridge/cv_bridge.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "image_transport/image_transport.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
@@ -86,21 +87,25 @@ private:
 
     /**
      * @brief Publish the current pose on the trajectory topic and log to TUM file.
-     * @param stamp  ROS timestamp of the originating image.
-     * @param pose   World-frame camera pose to publish.
+     * @param stamp       ROS timestamp of the originating image.
+     * @param pose        World-frame camera pose to publish.
+     * @param covariance  6x6 pose covariance [rot(3), trans(3)].
      */
     void publishAndLogPose(const builtin_interfaces::msg::Time &stamp,
-                           const frontend::Pose3d &pose);
+                           const frontend::Pose3d &pose,
+                           const Eigen::Matrix<double, 6, 6> &covariance);
 
     /**
-     * @brief Build a geometry_msgs::PoseStamped from an SE(3) pose.
-     * @param stamp  ROS timestamp.
-     * @param pose   SE(3) camera pose (T_world_camera).
-     * @return Populated PoseStamped message.
+     * @brief Build a nav_msgs::Odometry from an SE(3) pose and covariance.
+     * @param stamp       ROS timestamp.
+     * @param pose        SE(3) camera pose (T_world_camera).
+     * @param covariance  6x6 covariance [rot(3), trans(3)].
+     * @return Populated Odometry message.
      */
-    static geometry_msgs::msg::PoseStamped toPoseStamped(
+    static nav_msgs::msg::Odometry toOdometry(
         const builtin_interfaces::msg::Time &stamp,
-        const frontend::Pose3d &pose);
+        const frontend::Pose3d &pose,
+        const Eigen::Matrix<double, 6, 6> &covariance);
 
     /**
      * @brief Lazily build fisheye undistortion remap tables.
@@ -130,6 +135,9 @@ private:
 
     /// Trajectory publisher (nav_msgs::Path).
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+
+    /// Odometry publisher (pose with covariance).
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
 
     /// Accumulated path message (grows with each tracked frame).
     nav_msgs::msg::Path path_msg_;

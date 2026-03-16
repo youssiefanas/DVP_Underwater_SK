@@ -1,5 +1,6 @@
 #include "frontend/PoseEstimator.hpp"
 #include "dv_slam/utility.hpp"
+#include <Eigen/Eigenvalues>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -11,9 +12,10 @@ namespace frontend {
 
 PoseEstimator::PoseEstimator() {}
 
-void PoseEstimator::setIntrinsics(const cv::Mat &K) {
+void PoseEstimator::setIntrinsics(const cv::Mat &K,
+                                  const cv::Mat &dist_coeffs) {
   K_ = K.clone();
-  dist_coeffs_ = cv::Mat::zeros(4, 1, CV_64F);
+  dist_coeffs_ = dist_coeffs.clone();
 }
 
 // ─── 2D-2D: Essential matrix (initialization only) ──────────────
@@ -41,13 +43,14 @@ bool PoseEstimator::estimate(const std::vector<cv::Point2f> &points_prev,
 
 // ─── 3D-2D: PnP refinement (tracking) ──────────────────────────
 
-bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
+bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count,
+                                    Eigen::Matrix<double, 6, 6> *covariance) {
   if (!frame) {
     if (inlier_count)
       *inlier_count = 0;
     return false;
   }
-  if (K_.empty()) {
+  if (K_.empty() || dist_coeffs_.empty()) {
     std::cerr << "[PoseEstimator] Intrinsics not set!" << std::endl;
     return false;
   }
@@ -111,6 +114,62 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   for (size_t i = 0; i < keypoint_indices.size(); i++) {
     if (inlier_set.find(static_cast<int>(i)) == inlier_set.end()) {
       frame->accessMapPoints()[keypoint_indices[i]] = nullptr;
+    }
+  }
+
+  if (covariance) {
+    std::vector<cv::Point3f> inlier_obj;
+    std::vector<cv::Point2f> inlier_img;
+    inlier_obj.reserve(n_inliers);
+    inlier_img.reserve(n_inliers);
+    for (int i = 0; i < inlier_indices.rows; i++) {
+      int idx = inlier_indices.at<int>(i);
+      inlier_obj.push_back(object_points[idx]);
+      inlier_img.push_back(image_points[idx]);
+    }
+    if (n_inliers >= 6) {
+      std::vector<cv::Point2f> projected;
+      cv::Mat full_jacobian; // 2N x (3+3+2+2+DistCoeffs)
+      cv::projectPoints(inlier_obj, rvec, t_cv, K_, dist_coeffs_, projected,
+                        full_jacobian);
+      // jacobian matrix of derivatives of image points with respect to
+      // components of the rotation vector (3), translation vector (3), focal
+      // lengths (2), coordinates of the principal point (2), and the distortion
+      // coefficients
+      cv::Mat J_pose = full_jacobian(cv::Range::all(), cv::Range(0, 6));
+      double sse = 0.0;
+      for (int i = 0; i < n_inliers; i++) {
+        double dx = inlier_img[i].x - projected[i].x;
+        double dy = inlier_img[i].y - projected[i].y;
+        sse += dx * dx + dy * dy;
+      }
+      // sigma2 is the variance of the reprojection error, estimated from the
+      // residuals. The denominator is the degrees of freedom: 2N (observations)
+      // - 6 (pose parameters).
+      double sigma2 = sse / std::max(1, 2 * n_inliers - 6);
+      cv::Mat JtJ = J_pose.t() * J_pose;
+      cv::Mat JtJ_inv;
+      cv::invert(JtJ, JtJ_inv, cv::DECOMP_SVD);
+      cv::Mat cov_cv = sigma2 * JtJ_inv;
+      for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++)
+          (*covariance)(i, j) = cov_cv.at<double>(i, j);
+      *covariance = (*covariance + covariance->transpose()) / 2.0;
+
+      // Clamp eigenvalues to preserve positive-definiteness
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> eig(
+          *covariance);
+      Eigen::Matrix<double, 6, 1> clamped_evals =
+          eig.eigenvalues().cwiseMax(1e-6);
+      *covariance = eig.eigenvectors() * clamped_evals.asDiagonal() *
+                    eig.eigenvectors().transpose();
+    } else {
+      *covariance = Eigen::Matrix<double, 6, 6>::Zero();
+      covariance->block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * 0.01;
+      covariance->block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * 0.01;
+      std::cerr << "[PoseEstimator] Warning: Not enough inliers to estimate "
+                   "covariance. Returning default diagonal."
+                << std::endl;
     }
   }
 

@@ -3,6 +3,7 @@
 #include <memory>
 #include <optional>
 
+#include <Eigen/Core>
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 
@@ -36,8 +37,7 @@ enum class Stage {
  * @brief Output struct consumed by the backend (Visual Odom Node).
  *
  * Each time the frontend creates or promotes a KeyFrame it populates one of
- * these and stores it in pending_output_. The VO node calls
- * consumeBackendOutput() to retrieve it and feed the GTSAM factor graph.
+ * these and stores it in pending_output_.
  */
 struct FrontendOutput {
   Pose3d relative_pose{
@@ -48,6 +48,8 @@ struct FrontendOutput {
   bool is_first_keyframe = false;///< If true, emit a PriorFactor instead of BetweenFactor.
   Pose3d prior_pose{
       Pose3d::Identity()}; ///< Prior pose (used only when is_first_keyframe is true).
+  Eigen::Matrix<double, 6, 6> pose_covariance{
+      Eigen::Matrix<double, 6, 6>::Identity() * 0.01}; ///< 6x6 covariance [rot(3), trans(3)].
 };
 
 /**
@@ -62,8 +64,7 @@ struct FrontendOutput {
  *      via PnP, decides whether to insert new KeyFrames, and triangulates
  *      new MapPoints.
  *
- * After each KeyFrame event, a FrontendOutput is stored internally and can
- * be retrieved by the backend via consumeBackendOutput().
+ * After each KeyFrame event, a FrontendOutput is stored internally.
  */
 class VisualFrontend {
 public:
@@ -76,9 +77,11 @@ public:
      * @param init_scale    Monocular scale factor applied during initialization
      *                      (default 1.0; must be > 0).
      * @param enable_viewer If true, create a live visualization window.
+     * @param dist_coeffs   Distortion coefficients (CV_64F).
      */
     VisualFrontend(const ORBParams &params, const cv::Mat &K,
-                   double init_scale = 1.0, bool enable_viewer = false);
+                   const cv::Mat &dist_coeffs, double init_scale = 1.0,
+                   bool enable_viewer = false);
     ~VisualFrontend() = default;
 
     /**
@@ -113,11 +116,13 @@ public:
     /// @brief Get the global Map shared pointer.
     Map::Ptr getMap() const { return map_; }
 
-    /**
-     * @brief Retrieve and clear the pending backend output, if any.
-     * @return The FrontendOutput if a KeyFrame event occurred, or std::nullopt.
-     */
+    /// @brief Consume the pending FrontendOutput (returns nullopt if none).
     std::optional<FrontendOutput> consumeBackendOutput();
+
+    /// @brief Get the latest pose covariance (updated every tracked frame).
+    const Eigen::Matrix<double, 6, 6> &getLastCovariance() const {
+        return last_covariance_;
+    }
 
 private:
     // ─── Internal pipeline stages ────────────────────────────────
@@ -298,7 +303,8 @@ private:
      * @param[out] pnp_inliers    Number of PnP inliers on success.
      * @return true if PnP succeeded with enough inliers.
      */
-    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers);
+    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers,
+                  Eigen::Matrix<double, 6, 6> *covariance = nullptr);
 
     /**
      * @brief Reject implausible pose jumps between the predicted and actual pose.
@@ -323,7 +329,9 @@ private:
      * @param timestamp  Capture timestamp of the current frame (seconds).
      */
     void emitBackendOutput(bool is_first, const Pose3d &relative,
-                           const Pose3d &estimate, double timestamp);
+                           const Pose3d &estimate, double timestamp,
+                           const Eigen::Matrix<double, 6, 6> &covariance =
+                               Eigen::Matrix<double, 6, 6>::Identity() * 0.01);
 
     /**
      * @brief Undo a failed initialization attempt.
@@ -389,6 +397,10 @@ private:
     /// Pending output for the backend (consumed by the VO node).
     std::optional<FrontendOutput> pending_output_;
 
+    /// Latest pose covariance from PnP (updated each successful track).
+    Eigen::Matrix<double, 6, 6> last_covariance_{
+        Eigen::Matrix<double, 6, 6>::Identity() * 0.03};
+
     // ─── KeyFrame insertion thresholds ───────────────────────────
     int frames_since_last_kf_ = 0;                          ///< Frame counter since last KF.
     static constexpr int kMinFramesBetweenKF = 5;           ///< Min frames before allowing a new KF.
@@ -397,7 +409,8 @@ private:
 
     // ─── Tracking / PnP thresholds ──────────────────────────────
     static constexpr double kMaxPoseJumpTranslation = 0.20; ///< Max allowed pose-jump translation (meters).
-    static constexpr double kMaxPoseJumpRotationDeg = 12.0; ///< Max allowed pose-jump rotation (degrees).
+    static constexpr double kMaxPoseJumpRotationDeg =
+        18.0; ///< Max allowed jump rotation(degrees).
     static constexpr int kMaxConsecutiveFailures = 5;       ///< Failures before transitioning to LOST.
     static constexpr int kMaxRelocFrames = 30;              ///< Max frames in LOST before re-initialization.
     static constexpr int kMinInitMapPoints = 25;            ///< Min triangulated points for init to succeed.

@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include <Eigen/Core>
 #include <opencv2/opencv.hpp>
 
 #include "Frame.hpp"
@@ -33,8 +34,9 @@ public:
     /**
      * @brief Store camera intrinsics (call once during construction).
      * @param K  3x3 camera intrinsic matrix (CV_64F).
+     * @param dist_coeffs  Distortion coefficients (CV_64F).
      */
-    void setIntrinsics(const cv::Mat &K);
+    void setIntrinsics(const cv::Mat &K, const cv::Mat &dist_coeffs);
 
     /**
      * @brief Estimate the relative pose between two views via the Essential matrix.
@@ -63,12 +65,16 @@ public:
      * Builds 3D-2D correspondences from the frame's MapPoint vector, runs
      * cv::solvePnPRansac with the current pose as initial guess, removes
      * outlier associations, and updates the frame's pose on success.
+     * Optionally estimates a 6x6 covariance matrix [rotation(3), translation(3)]
+     * from inlier reprojection residuals: Σ = σ² (JᵀJ)⁻¹
      *
      * @param frame         The frame whose pose will be refined in-place.
      * @param[out] inlier_count  If non-null, receives the number of PnP inliers.
+     * @param[out] covariance    If non-null, receives the 6x6 pose covariance.
      * @return true if PnP succeeded with at least kMinPnPCorrespondences inliers.
      */
-    bool estimateRefined(Frame::Ptr frame, int *inlier_count = nullptr);
+    bool estimateRefined(Frame::Ptr frame, int *inlier_count = nullptr,
+                         Eigen::Matrix<double, 6, 6> *covariance = nullptr);
 
     /**
      * @brief Triangulate 3D points from two-view 2D correspondences.
