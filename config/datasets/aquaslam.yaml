@@ -1,6 +1,22 @@
 /**:
   ros__parameters:
-    image_topic: "/camera/image_raw"
+    image_topic: "/camera/right/image_dehazed"
+
+    input:
+      image_transport: "compressed"
+
+    Camera:
+      model: pinhole
+      fx: 655.0
+      fy: 655.0
+      cx: 306.0
+      cy: 256.0
+      k1: 0.0
+      k2: 0.0
+      p1: 0.0
+      p2: 0.0
+      k3: 0.0
+      undistort: false
 
     output:
       tum_trajectory_path: "vo_trajectory_tum_aquaslam.txt"
