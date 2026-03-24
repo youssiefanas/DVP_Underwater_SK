@@ -1,6 +1,30 @@
 /**:
   ros__parameters:
-    image_topic: "/camera/image_raw"
+    # OceanSim publishes CompressedImage; a republish node converts it to raw.
+    # See oceansim_launch.py for the image_transport/republish node.
+    image_topic: "/oceansim/robot/downcamleft"
+
+    input:
+      image_transport: "compressed"  # matches the republish node's output
+
+    # OceanSim camera: 1280x720, f=21mm, sensor_width≈20.955mm → fx=fy=1282.748
+    Camera.model: "pinhole"
+    Camera.fx: 1282.748
+    Camera.fy: 1282.748
+    Camera.cx: 640.0
+    Camera.cy: 360.0
+    Camera.width: 1280
+    Camera.height: 720
+    Camera.k1: 0.0
+    Camera.k2: 0.0
+    Camera.p1: 0.0
+    Camera.p2: 0.0
+    Camera.undistort: false
+
+    # Use metric scale; mimosa's DVL fusion will anchor absolute scale.
+    mono:
+      init_scale: 1.0
 
     output:
+      save_tum_trajectory: true
       tum_trajectory_path: "vo_trajectory_tum_oceansim.txt"
