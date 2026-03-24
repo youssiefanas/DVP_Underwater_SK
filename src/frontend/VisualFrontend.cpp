@@ -689,7 +689,11 @@ void VisualFrontend::resetToInitializing() {
   // Preserve the last known good pose as the starting point
   Pose3d restart_pose = last_good_pose_;
 
-  // Clear the map
+  // TODO: Implement KeyFrame culling and sliding-window pruning so the map
+  //       doesn't grow unbounded during long sequences. Currently the only
+  //       cleanup is this full reset. See Map::getKeyFramesInWindow() (unused)
+  //       and consider culling redundant KFs whose MapPoints are well-observed
+  //       by other KFs (ORB-SLAM2-style).
   map_ = std::make_shared<Map>();
 
   // Reset all state
