@@ -36,10 +36,12 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
 
   openTrajectoryFile();
 
+  const std::string transport =
+      this->declare_parameter("input.image_transport", "raw");
   image_subscriber_ = image_transport::create_subscription(
       this, image_topic,
       std::bind(&VisualOdomNode::imageCallback, this, std::placeholders::_1),
-      "raw", image_qos);
+      transport, image_qos);
 
   path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
       "trajectory", kTrajectoryPubQueueSize);
@@ -299,7 +301,7 @@ void VisualOdomNode::publishAndLogPose(
     const builtin_interfaces::msg::Time &stamp,
     const frontend::Pose3d &pose,
     const Eigen::Matrix<double, 6, 6> &covariance) {
-  auto odom_msg = toOdometry(stamp, pose, covariance * 100);
+  auto odom_msg = toOdometry(stamp, pose, covariance * 1);
   odom_pub_->publish(odom_msg);
 
   // Path only accepts PoseStamped — extract from odometry
