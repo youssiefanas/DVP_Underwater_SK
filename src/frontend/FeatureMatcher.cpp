@@ -3,6 +3,53 @@
 
 namespace frontend {
 
+// ─── Spatial grid for fast radius lookup ─────────────────────────
+namespace {
+
+class KeypointGrid {
+public:
+  KeypointGrid(const std::vector<cv::KeyPoint> &keypoints,
+               const std::vector<MapPoint::Ptr> &map_points, int img_cols,
+               int img_rows, float cell_size)
+      : cell_size_(cell_size),
+        cols_(std::max(1, static_cast<int>(std::ceil(img_cols / cell_size)))),
+        rows_(std::max(1, static_cast<int>(std::ceil(img_rows / cell_size)))),
+        cells_(cols_ * rows_) {
+    for (size_t j = 0; j < keypoints.size(); j++) {
+      if (j < map_points.size() && map_points[j])
+        continue; // Already matched — skip
+      int cx = static_cast<int>(keypoints[j].pt.x / cell_size_);
+      int cy = static_cast<int>(keypoints[j].pt.y / cell_size_);
+      cx = std::clamp(cx, 0, cols_ - 1);
+      cy = std::clamp(cy, 0, rows_ - 1);
+      cells_[cy * cols_ + cx].push_back(static_cast<int>(j));
+    }
+  }
+
+  // Return indices of keypoints in cells overlapping the search radius
+  void getCandidates(float u, float v, float radius,
+                     std::vector<int> &out) const {
+    int min_cx = std::max(0, static_cast<int>((u - radius) / cell_size_));
+    int max_cx = std::min(cols_ - 1, static_cast<int>((u + radius) / cell_size_));
+    int min_cy = std::max(0, static_cast<int>((v - radius) / cell_size_));
+    int max_cy = std::min(rows_ - 1, static_cast<int>((v + radius) / cell_size_));
+
+    for (int cy = min_cy; cy <= max_cy; cy++) {
+      for (int cx = min_cx; cx <= max_cx; cx++) {
+        const auto &cell = cells_[cy * cols_ + cx];
+        out.insert(out.end(), cell.begin(), cell.end());
+      }
+    }
+  }
+
+private:
+  float cell_size_;
+  int cols_, rows_;
+  std::vector<std::vector<int>> cells_;
+};
+
+} // anonymous namespace
+
 FeatureMatcher::FeatureMatcher(const std::string &matcher_type,
                                float ratio_thresh)
     : ratio_thresh_(ratio_thresh) {
@@ -10,7 +57,10 @@ FeatureMatcher::FeatureMatcher(const std::string &matcher_type,
   if (matcher_type == "NORM_L2") {
     matcher_ = cv::DescriptorMatcher::create("BruteForce");
   } else {
-    matcher_ = cv::DescriptorMatcher::create("BruteForce-Hamming");
+    // LSH-based FLANN is ~3-5x faster than brute-force for binary descriptors.
+    // Parameters: table_number=6, key_size=12, multi_probe_level=1
+    matcher_ = cv::makePtr<cv::FlannBasedMatcher>(
+        cv::makePtr<cv::flann::LshIndexParams>(6, 12, 1));
   }
 }
 
@@ -76,6 +126,12 @@ int FeatureMatcher::matchByProjection(
   const auto &keypoints = frame->getKeypoints();
   const cv::Mat &descriptors = frame->getDescriptors();
 
+  // Build spatial grid once — cell size = search_radius so a radius query
+  // touches at most 3×3 = 9 cells instead of all keypoints.
+  KeypointGrid grid(keypoints, frame->accessMapPoints(), img_cols, img_rows,
+                    search_radius);
+  std::vector<int> candidates;
+
   for (const auto &mp : map_points) {
     if (!mp || mp->isBad_)
       continue;
@@ -100,25 +156,26 @@ int FeatureMatcher::matchByProjection(
     int best_dist = 256;
     int second_best_dist = 256;
 
-    for (size_t j = 0; j < keypoints.size(); j++) {
-      if (j >= frame->accessMapPoints().size()) {
-        continue;
-      }
+    candidates.clear();
+    grid.getCandidates(static_cast<float>(u), static_cast<float>(v),
+                       search_radius, candidates);
+
+    for (int j : candidates) {
       if (frame->accessMapPoints()[j])
-        continue; // Already matched
+        continue; // Already matched by an earlier map point in this call
 
       const cv::KeyPoint &kp = keypoints[j];
-      float dx = kp.pt.x - (float)u;
-      float dy = kp.pt.y - (float)v;
+      float dx = kp.pt.x - static_cast<float>(u);
+      float dy = kp.pt.y - static_cast<float>(v);
       if (dx * dx + dy * dy > search_r2)
         continue;
 
       int dist =
-          cv::norm(mp->descriptor_, descriptors.row((int)j), cv::NORM_HAMMING);
+          cv::norm(mp->descriptor_, descriptors.row(j), cv::NORM_HAMMING);
       if (dist < best_dist) {
         second_best_dist = best_dist;
         best_dist = dist;
-        best_idx = (int)j;
+        best_idx = j;
       } else if (dist < second_best_dist) {
         second_best_dist = dist;
       }
@@ -128,7 +185,7 @@ int FeatureMatcher::matchByProjection(
     if (best_idx >= 0 && best_dist < kMaxHammingDist) {
       // If there's a second candidate, require ratio test
       if (second_best_dist < 256) {
-        if ((float)best_dist > 0.9f * (float)second_best_dist)
+        if (static_cast<float>(best_dist) > 0.9f * static_cast<float>(second_best_dist))
           continue; // Ambiguous match
       }
       frame->accessMapPoints()[best_idx] = mp;

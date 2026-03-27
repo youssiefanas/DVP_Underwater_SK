@@ -1,6 +1,7 @@
 #include "visual_odom_node.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <iomanip>
@@ -226,7 +227,13 @@ void VisualOdomNode::imageCallback(
       return;
     }
 
+    const auto preprocess_start = std::chrono::steady_clock::now();
     const cv::Mat frontend_image = preprocessImage(cv_ptr->image);
+    const double preprocess_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - preprocess_start)
+            .count();
+
     const double timestamp =
         msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
@@ -239,6 +246,14 @@ void VisualOdomNode::imageCallback(
       publishAndLogPose(msg->header.stamp, frame->getPose(),
                         visual_frontend_->getLastCovariance());
     }
+
+    const auto &t = visual_frontend_->getLastTiming();
+    RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Frame timing (ms): preprocess=%.1f  extraction=%.1f  "
+        "tracking=%.1f  viewer=%.1f  total=%.1f",
+        preprocess_ms, t.extraction_ms, t.tracking_ms, t.viewer_ms,
+        preprocess_ms + t.total_ms);
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
   }
@@ -293,6 +308,14 @@ void VisualOdomNode::publishAndLogPose(
   pose_stamped.pose = odom_msg.pose.pose;
   path_msg_.header.stamp = stamp;
   path_msg_.poses.push_back(pose_stamped);
+
+  // Cap path length to avoid unbounded serialization cost per publish.
+  if (path_msg_.poses.size() > kMaxPathPoses) {
+    path_msg_.poses.erase(
+        path_msg_.poses.begin(),
+        path_msg_.poses.begin() +
+            static_cast<long>(path_msg_.poses.size() - kMaxPathPoses));
+  }
   path_pub_->publish(path_msg_);
 
   appendTumPose(rclcpp::Time(stamp), pose);

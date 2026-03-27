@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -22,6 +23,16 @@ class FeatureExtractor;
 class FeatureMatcher;
 struct ORBParams;
 class PoseEstimator;
+
+/**
+ * @brief Per-frame timing breakdown (all values in milliseconds).
+ */
+struct FrameTiming {
+  double extraction_ms = 0.0;   ///< ORB feature extraction.
+  double tracking_ms = 0.0;     ///< State machine (matching + PnP + KF insertion).
+  double viewer_ms = 0.0;       ///< Viewer drawing (0 if disabled).
+  double total_ms = 0.0;        ///< Total handleImage time.
+};
 
 /**
  * @brief Tracking stage of the frontend state machine.
@@ -123,6 +134,9 @@ public:
     const Eigen::Matrix<double, 6, 6> &getLastCovariance() const {
         return last_covariance_;
     }
+
+    /// @brief Get per-frame timing breakdown from the last handleImage call.
+    const FrameTiming &getLastTiming() const { return last_timing_; }
 
 private:
     // ─── Internal pipeline stages ────────────────────────────────
@@ -400,6 +414,9 @@ private:
     /// Latest pose covariance from PnP (updated each successful track).
     Eigen::Matrix<double, 6, 6> last_covariance_{
         Eigen::Matrix<double, 6, 6>::Identity() * 0.03};
+
+    /// Per-frame timing breakdown (populated by handleImage).
+    FrameTiming last_timing_;
 
     // ─── KeyFrame insertion thresholds ───────────────────────────
     int frames_since_last_kf_ = 0;                          ///< Frame counter since last KF.

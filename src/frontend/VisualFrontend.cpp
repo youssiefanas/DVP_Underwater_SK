@@ -94,14 +94,20 @@ VisualFrontend::VisualFrontend(const ORBParams &params, const cv::Mat &K,
 // ─────────────────────────────────────────────────────────────────
 
 bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
+  using Clock = std::chrono::steady_clock;
   if (gray_image.empty()) {
     std::cerr << "[Frontend] Received empty image, skipping frame."
               << std::endl;
     return false;
   }
 
+  const auto t0 = Clock::now();
+
   Frame::Ptr frame = Frame::createFrame(gray_image, timestamp);
   extractFeatures(frame);
+
+  const auto t1 = Clock::now();
+
   if (frame->getKeypoints().empty() || frame->getDescriptors().empty()) {
     std::cout << "[Frontend] No features extracted on frame " << frame->getId()
               << ", skipping." << std::endl;
@@ -110,11 +116,24 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
 
   bool success = process(frame);
 
+  const auto t2 = Clock::now();
+
   if (viewer_) {
     cv::Mat img_out;
     cv::drawKeypoints(frame->getImage(), frame->getKeypoints(), img_out);
     viewer_->show(img_out);
   }
+
+  const auto t3 = Clock::now();
+
+  auto ms = [](auto a, auto b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+  };
+  last_timing_.extraction_ms = ms(t0, t1);
+  last_timing_.tracking_ms   = ms(t1, t2);
+  last_timing_.viewer_ms     = ms(t2, t3);
+  last_timing_.total_ms      = ms(t0, t3);
+
   return success;
 }
 
@@ -689,7 +708,11 @@ void VisualFrontend::resetToInitializing() {
   // Preserve the last known good pose as the starting point
   Pose3d restart_pose = last_good_pose_;
 
-  // Clear the map
+  // TODO: Implement KeyFrame culling and sliding-window pruning so the map
+  //       doesn't grow unbounded during long sequences. Currently the only
+  //       cleanup is this full reset. See Map::getKeyFramesInWindow() (unused)
+  //       and consider culling redundant KFs whose MapPoints are well-observed
+  //       by other KFs (ORB-SLAM2-style).
   map_ = std::make_shared<Map>();
 
   // Reset all state
