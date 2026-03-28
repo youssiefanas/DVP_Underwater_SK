@@ -327,7 +327,7 @@ bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
       continue;
 
     const auto &p = points_3d[i];
-    Eigen::Vector3d P_w(p.x, p.y, p.z);
+    Eigen::Vector3d P_w = T_w_prev * Eigen::Vector3d(p.x, p.y, p.z);
     MapPoint::Ptr mp = MapPoint::create(P_w);
     const auto &m = inlier_matches[i];
     mp->addObservation(last_keyframe_, m.queryIdx);
@@ -425,30 +425,26 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     return false;
   }
 
-  // Phase 4: PnP (with covariance estimation)
+  // Phase 4: PnP RANSAC (initial pose + outlier rejection)
   int pnp_inliers = 0;
-  Eigen::Matrix<double, 6, 6> covariance;
-  if (!solvePnP(current_frame, pnp_inliers, &covariance))
+  if (!solvePnP(current_frame, pnp_inliers))
     return false;
 
-  // Phase 5: Post-PnP re-project with refined pose
-  size_t after_pnp = countTrackedMapPoints(current_frame);
-  if (static_cast<int>(after_pnp) < kMinTrackedMapPoints) {
-    int extra = feature_matcher_->matchByProjection(
-        current_frame, local_mps, K_, current_frame->getPose(), kSearchRadius);
-    if (extra > 0) {
-      if (!solvePnP(current_frame, pnp_inliers, &covariance))
-        return false;
-    }
+  // Phase 5: Motion-only Bundle Adjustment (refines pose, computes covariance)
+  Eigen::Matrix<double, 6, 6> covariance;
+  int ba_inliers = 0;
+  if (!pose_estimator_->motionOnlyBA(current_frame, &ba_inliers, &covariance)) {
+    std::cout << "[Frontend] Motion-only BA failed" << std::endl;
+    return false;
   }
-
   last_covariance_ = covariance;
 
   // Phase 6: Reject implausible pose jumps
-  if (!validatePoseJump(predicted_pose, current_frame->getPose(), pnp_inliers))
+  if (!validatePoseJump(predicted_pose, current_frame->getPose(), ba_inliers))
     return false;
 
-  std::cout << "[Frontend] PnP OK | inliers=" << pnp_inliers
+  std::cout << "[Frontend] BA OK | inliers=" << ba_inliers
+            << " (PnP=" << pnp_inliers << ")"
             << " | prop=" << propagated << " | proj=" << n_proj
             << " | final=" << countTrackedMapPoints(current_frame)
             << " | Pose: " << current_frame->getPose().translation().transpose()
@@ -505,10 +501,8 @@ void VisualFrontend::relocateFromReferenceKF(Frame::Ptr current_frame) {
   }
 }
 
-bool VisualFrontend::solvePnP(Frame::Ptr current_frame, int &pnp_inliers,
-                              Eigen::Matrix<double, 6, 6> *covariance) {
-  if (!pose_estimator_->estimateRefined(current_frame, &pnp_inliers,
-                                        covariance)) {
+bool VisualFrontend::solvePnP(Frame::Ptr current_frame, int &pnp_inliers) {
+  if (!pose_estimator_->estimateRefined(current_frame, &pnp_inliers)) {
     std::cout << "[Frontend] PnP failed (inliers=" << pnp_inliers << ")"
               << std::endl;
     return false;

@@ -57,10 +57,7 @@ FeatureMatcher::FeatureMatcher(const std::string &matcher_type,
   if (matcher_type == "NORM_L2") {
     matcher_ = cv::DescriptorMatcher::create("BruteForce");
   } else {
-    // LSH-based FLANN is ~3-5x faster than brute-force for binary descriptors.
-    // Parameters: table_number=6, key_size=12, multi_probe_level=1
-    matcher_ = cv::makePtr<cv::FlannBasedMatcher>(
-        cv::makePtr<cv::flann::LshIndexParams>(6, 12, 1));
+    matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING);
   }
 }
 

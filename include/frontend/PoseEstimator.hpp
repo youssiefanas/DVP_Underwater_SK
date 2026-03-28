@@ -1,9 +1,12 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <Eigen/Core>
 #include <opencv2/opencv.hpp>
+
+#include <gtsam/geometry/Cal3_S2.h>
 
 #include "Frame.hpp"
 
@@ -60,21 +63,18 @@ public:
                   cv::Mat& mask);
 
     /**
-     * @brief Refine the frame's pose via PnP using its MapPoint associations.
+     * @brief Refine the frame's pose via PnP RANSAC and remove outlier
+     *        MapPoint associations.
      *
      * Builds 3D-2D correspondences from the frame's MapPoint vector, runs
      * cv::solvePnPRansac with the current pose as initial guess, removes
      * outlier associations, and updates the frame's pose on success.
-     * Optionally estimates a 6x6 covariance matrix [rotation(3), translation(3)]
-     * from inlier reprojection residuals: Σ = σ² (JᵀJ)⁻¹
      *
      * @param frame         The frame whose pose will be refined in-place.
      * @param[out] inlier_count  If non-null, receives the number of PnP inliers.
-     * @param[out] covariance    If non-null, receives the 6x6 pose covariance.
      * @return true if PnP succeeded with at least kMinPnPCorrespondences inliers.
      */
-    bool estimateRefined(Frame::Ptr frame, int *inlier_count = nullptr,
-                         Eigen::Matrix<double, 6, 6> *covariance = nullptr);
+    bool estimateRefined(Frame::Ptr frame, int *inlier_count = nullptr);
 
     /**
      * @brief Triangulate 3D points from two-view 2D correspondences.
@@ -96,16 +96,37 @@ public:
                      const cv::Mat &R, const cv::Mat &t,
                      std::vector<cv::Point3f> &points_3d);
 
+    /**
+     * @brief Motion-only Bundle Adjustment: optimize the frame's pose while
+     *        holding all MapPoint positions fixed.
+     *
+     * Builds a GTSAM factor graph with one Pose3 variable and one
+     * FixedLandmarkProjectionFactor per inlier MapPoint. Uses a Huber
+     * robust kernel to down-weight remaining outliers. Extracts the 6x6
+     * pose covariance from GTSAM Marginals.
+     *
+     * Call after PnP RANSAC has set an initial pose and removed gross
+     * outliers.
+     *
+     * @param frame         Frame with pose initial guess and MapPoint associations.
+     * @param[out] inlier_count  Number of inliers after post-BA outlier rejection.
+     * @param[out] covariance    6x6 pose covariance [rot(3), trans(3)].
+     * @return true if optimization succeeded.
+     */
+    bool motionOnlyBA(Frame::Ptr frame, int *inlier_count = nullptr,
+                      Eigen::Matrix<double, 6, 6> *covariance = nullptr);
+
   private:
     cv::Mat K_;            ///< Cached 3x3 camera intrinsic matrix.
     cv::Mat dist_coeffs_;  ///< Distortion coefficients (zeros — undistorted input assumed).
+    std::shared_ptr<gtsam::Cal3_S2> gtsam_K_; ///< GTSAM calibration (created in setIntrinsics).
 
     static constexpr size_t kMinEssentialPoints = 5;      ///< Min inliers for Essential matrix.
     static constexpr size_t kMinPnPCorrespondences = 10;   ///< Min 3D-2D pairs for PnP.
     static constexpr double kRansacConfidence = 0.99;      ///< RANSAC confidence level.
     static constexpr double kEssentialThreshold = 1.0;     ///< Essential matrix RANSAC threshold (pixels).
     static constexpr int kPnPIterations = 500;             ///< solvePnPRansac iteration limit.
-    static constexpr float kPnPReprojThreshold = 6.0f;     ///< PnP reprojection error threshold (pixels).
+    static constexpr float kPnPReprojThreshold = 3.5f;     ///< PnP reprojection error threshold (pixels).
 };
 
 } // namespace frontend

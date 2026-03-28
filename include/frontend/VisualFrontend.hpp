@@ -308,17 +308,17 @@ private:
     void relocateFromReferenceKF(Frame::Ptr current_frame);
 
     /**
-     * @brief Run PnP pose estimation with RANSAC and inlier threshold enforcement.
+     * @brief Run PnP RANSAC for initial pose + outlier rejection.
      *
      * Delegates to PoseEstimator::estimateRefined(). Logs and returns false
      * if PnP fails or the inlier count is below kMinPnPInliers.
+     * Does NOT compute covariance — that is handled by motionOnlyBA.
      *
      * @param current_frame       Frame whose pose will be refined.
      * @param[out] pnp_inliers    Number of PnP inliers on success.
      * @return true if PnP succeeded with enough inliers.
      */
-    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers,
-                  Eigen::Matrix<double, 6, 6> *covariance = nullptr);
+    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers);
 
     /**
      * @brief Reject implausible pose jumps between the predicted and actual pose.
