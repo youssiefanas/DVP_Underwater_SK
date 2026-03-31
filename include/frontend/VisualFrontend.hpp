@@ -425,9 +425,9 @@ private:
     static constexpr double kMinRotationDeg = 10.0;         ///< Min rotation to trigger KF (degrees).
 
     // ─── Tracking / PnP thresholds ──────────────────────────────
-    static constexpr double kMaxPoseJumpTranslation = 0.20; ///< Max allowed pose-jump translation (meters).
+    static constexpr double kMaxPoseJumpTranslation = 0.15; ///< Max allowed pose-jump translation (meters).
     static constexpr double kMaxPoseJumpRotationDeg =
-        18.0; ///< Max allowed jump rotation(degrees).
+        10.0; ///< Max allowed jump rotation(degrees).
     static constexpr int kMaxConsecutiveFailures = 5;       ///< Failures before transitioning to LOST.
     static constexpr int kMaxRelocFrames = 30;              ///< Max frames in LOST before re-initialization.
     static constexpr int kMinInitMapPoints = 25;            ///< Min triangulated points for init to succeed.

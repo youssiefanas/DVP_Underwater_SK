@@ -20,7 +20,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'dataset_config',
-            default_value='datasets/aquaslam.yaml',
+            default_value='datasets/oceansim.yaml',
             description='Dataset parameter file path relative to config/'
         ),
         Node(
