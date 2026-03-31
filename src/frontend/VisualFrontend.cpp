@@ -187,6 +187,12 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
 
   case Stage::TRACKING: {
     bool ok = track(current_frame);
+    // TODO: if tracking fails, we could still publish the last good pose with
+    // increased covariance instead of skipping the frame entirely
+    // TODO: get last pose from mimosa instead of dead reckoning with the last
+    // velocity (which can be very wrong if we lose tracking for a few frames or
+    // the corrected trajectrory is different as mimosa is optimized with other
+    // sensors)
     if (ok) {
       if (last_frame_) {
         velocity_ =
