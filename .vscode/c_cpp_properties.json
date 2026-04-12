@@ -9,7 +9,6 @@
         "/home/anas/ros-jazzy-ros1-bridge/install/ros1_bridge/include/**",
         "/home/anas/jazzy_ws/install/waterlinked_a50_ros_driver/include/**",
         "/opt/ros/jazzy/include/**",
-        "/home/anas/kilted_ws/src/dv_slam/include/**",
         "include/**",
         "/usr/include/**"
       ],

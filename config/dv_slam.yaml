@@ -18,6 +18,11 @@
       reliable_qos: false # false for faster runs with some frame drops, true for more reliable processing at the cost of potential stalls.
       # For ROS2, consider using "best_effort_qos" instead of "reliable_qos" for lower latency at the cost of potential frame drops.
 
+    clahe:
+      enabled: true # false to skip CLAHE contrast enhancement.
+      clip_limit: 3.0 # higher = more contrast boost.
+      tile_size: 8 # grid cell size (pixels) for local histogram equalization.
+
     mono:
       # Monocular VO has unknown metric scale.
       # Start near fr2_xyz scale; fine-tune using evo APE after first run.
