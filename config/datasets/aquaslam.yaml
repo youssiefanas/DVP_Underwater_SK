@@ -19,4 +19,4 @@
       undistort: false
 
     output:
-      tum_trajectory_path: "vo_trajectory_tum_aquaslam.txt"
+      tum_trajectory_path: "vo_trajectory_tum_aquaslam_easy_halftank.txt"

@@ -1,10 +1,22 @@
 #include "frontend/PoseEstimator.hpp"
+#include "frontend/FixedLandmarkProjectionFactor.hpp"
 #include "dv_slam/utility.hpp"
+
 #include <Eigen/Eigenvalues>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <unordered_set>
+
+#include <gtsam/geometry/PinholeCamera.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/inference/Symbol.h>
+#include <gtsam/linear/NoiseModel.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <gtsam/nonlinear/LevenbergMarquardtParams.h>
+#include <gtsam/nonlinear/Marginals.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
 
 namespace frontend {
 
@@ -16,6 +28,12 @@ void PoseEstimator::setIntrinsics(const cv::Mat &K,
                                   const cv::Mat &dist_coeffs) {
   K_ = K.clone();
   dist_coeffs_ = dist_coeffs.clone();
+  double fx = K.at<double>(0, 0);
+  double fy = K.at<double>(1, 1);
+  double s = K.at<double>(0, 1);
+  double cx = K.at<double>(0, 2);
+  double cy = K.at<double>(1, 2);
+  gtsam_K_ = std::make_shared<gtsam::Cal3_S2>(fx, fy, s, cx, cy);
 }
 
 // ─── 2D-2D: Essential matrix (initialization only) ──────────────
@@ -43,8 +61,7 @@ bool PoseEstimator::estimate(const std::vector<cv::Point2f> &points_prev,
 
 // ─── 3D-2D: PnP refinement (tracking) ──────────────────────────
 
-bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count,
-                                    Eigen::Matrix<double, 6, 6> *covariance) {
+bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
   if (!frame) {
     if (inlier_count)
       *inlier_count = 0;
@@ -117,66 +134,138 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count,
     }
   }
 
-  if (covariance) {
-    std::vector<cv::Point3f> inlier_obj;
-    std::vector<cv::Point2f> inlier_img;
-    inlier_obj.reserve(n_inliers);
-    inlier_img.reserve(n_inliers);
-    for (int i = 0; i < inlier_indices.rows; i++) {
-      int idx = inlier_indices.at<int>(i);
-      inlier_obj.push_back(object_points[idx]);
-      inlier_img.push_back(image_points[idx]);
-    }
-    if (n_inliers >= 6) {
-      std::vector<cv::Point2f> projected;
-      cv::Mat full_jacobian; // 2N x (3+3+2+2+DistCoeffs)
-      cv::projectPoints(inlier_obj, rvec, t_cv, K_, dist_coeffs_, projected,
-                        full_jacobian);
-      // jacobian matrix of derivatives of image points with respect to
-      // components of the rotation vector (3), translation vector (3), focal
-      // lengths (2), coordinates of the principal point (2), and the distortion
-      // coefficients
-      cv::Mat J_pose = full_jacobian(cv::Range::all(), cv::Range(0, 6));
-      double sse = 0.0;
-      for (int i = 0; i < n_inliers; i++) {
-        double dx = inlier_img[i].x - projected[i].x;
-        double dy = inlier_img[i].y - projected[i].y;
-        sse += dx * dx + dy * dy;
-      }
-      // sigma2 is the variance of the reprojection error, estimated from the
-      // residuals. The denominator is the degrees of freedom: 2N (observations)
-      // - 6 (pose parameters).
-      double sigma2 = sse / std::max(1, 2 * n_inliers - 6);
-      cv::Mat JtJ = J_pose.t() * J_pose;
-      cv::Mat JtJ_inv;
-      cv::invert(JtJ, JtJ_inv, cv::DECOMP_SVD);
-      cv::Mat cov_cv = sigma2 * JtJ_inv;
-      for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
-          (*covariance)(i, j) = cov_cv.at<double>(i, j);
-      *covariance = (*covariance + covariance->transpose()) / 2.0;
-
-      // Clamp eigenvalues to preserve positive-definiteness
-      Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> eig(
-          *covariance);
-      Eigen::Matrix<double, 6, 1> clamped_evals =
-          eig.eigenvalues().cwiseMax(1e-6);
-      *covariance = eig.eigenvectors() * clamped_evals.asDiagonal() *
-                    eig.eigenvectors().transpose();
-    } else {
-      *covariance = Eigen::Matrix<double, 6, 6>::Zero();
-      covariance->block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * 0.01;
-      covariance->block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * 0.01;
-      std::cerr << "[PoseEstimator] Warning: Not enough inliers to estimate "
-                   "covariance. Returning default diagonal."
-                << std::endl;
-    }
-  }
-
   // Convert refined pose back: T_c_w → T_w_c
   cv::Mat R_refined;
   cv::Rodrigues(rvec, R_refined);
   frame->setPose(cvToPose3d(R_refined, t_cv).inverse());
+
+  return true;
+}
+
+// ─── Motion-only Bundle Adjustment ──────────────────────────────
+
+bool PoseEstimator::motionOnlyBA(Frame::Ptr frame, int *inlier_count,
+                                 Eigen::Matrix<double, 6, 6> *covariance) {
+  if (!frame || !gtsam_K_) {
+    if (inlier_count)
+      *inlier_count = 0;
+    return false;
+  }
+
+  // Collect 3D-2D correspondences from surviving inlier MapPoints
+  const auto &map_points = frame->getMapPoints();
+  const auto &keypoints = frame->getKeypoints();
+
+  std::vector<gtsam::Point3> landmarks;
+  std::vector<gtsam::Point2> measurements;
+  std::vector<size_t> kp_indices;
+
+  for (size_t i = 0; i < map_points.size() && i < keypoints.size(); i++) {
+    if (!map_points[i] || map_points[i]->isBad_)
+      continue;
+    const Eigen::Vector3d &pos = map_points[i]->position_;
+    landmarks.emplace_back(pos.x(), pos.y(), pos.z());
+    measurements.emplace_back(keypoints[i].pt.x, keypoints[i].pt.y);
+    kp_indices.push_back(i);
+  }
+
+  if (landmarks.size() < kMinPnPCorrespondences) {
+    if (inlier_count)
+      *inlier_count = 0;
+    return false;
+  }
+
+  // Build factor graph: single Pose3 variable + N projection factors
+  using gtsam::symbol_shorthand::X;
+  gtsam::NonlinearFactorGraph graph;
+  gtsam::Values initial;
+
+  // Convert Eigen::Isometry3d → gtsam::Pose3
+  Eigen::Matrix4d mat = frame->getPose().matrix();
+  gtsam::Pose3 init_pose(mat);
+  initial.insert(X(0), init_pose);
+
+  // Huber robust kernel (k = 1.345 ≈ 95% efficiency for Gaussian)
+  auto huber = gtsam::noiseModel::mEstimator::Huber::Create(1.345);
+  auto pixel_noise = gtsam::noiseModel::Isotropic::Sigma(2, 1.0);
+  auto robust_noise = gtsam::noiseModel::Robust::Create(huber, pixel_noise);
+
+  for (size_t i = 0; i < landmarks.size(); i++) {
+    graph.emplace_shared<FixedLandmarkProjectionFactor>(
+        measurements[i], robust_noise, X(0), landmarks[i], gtsam_K_);
+  }
+
+  // Optimize (converges fast from a good PnP init)
+  gtsam::LevenbergMarquardtParams params;
+  params.maxIterations = 10;
+  params.relativeErrorTol = 1e-5;
+  params.absoluteErrorTol = 1e-5;
+
+  gtsam::Values result;
+  try {
+    gtsam::LevenbergMarquardtOptimizer optimizer(graph, initial, params);
+    result = optimizer.optimize();
+  } catch (const std::exception &e) {
+    std::cerr << "[PoseEstimator] Motion-only BA failed: " << e.what()
+              << std::endl;
+    if (inlier_count)
+      *inlier_count = 0;
+    return false;
+  }
+
+  gtsam::Pose3 optimized = result.at<gtsam::Pose3>(X(0));
+
+  // Update frame pose
+  Pose3d pose_out = Pose3d::Identity();
+  pose_out.matrix() = optimized.matrix();
+  frame->setPose(pose_out);
+
+  // Post-BA outlier rejection by reprojection error
+  gtsam::PinholeCamera<gtsam::Cal3_S2> camera(optimized, *gtsam_K_);
+  const double reproj_thresh_sq =
+      static_cast<double>(kPnPReprojThreshold * kPnPReprojThreshold);
+  int n_inliers = 0;
+
+  for (size_t i = 0; i < landmarks.size(); i++) {
+    try {
+      gtsam::Point2 proj = camera.project(landmarks[i]);
+      double dx = proj.x() - measurements[i].x();
+      double dy = proj.y() - measurements[i].y();
+      if (dx * dx + dy * dy > reproj_thresh_sq) {
+        frame->accessMapPoints()[kp_indices[i]] = nullptr;
+      } else {
+        n_inliers++;
+      }
+    } catch (gtsam::CheiralityException &) {
+      frame->accessMapPoints()[kp_indices[i]] = nullptr;
+    }
+  }
+
+  if (inlier_count)
+    *inlier_count = n_inliers;
+
+  if (n_inliers < static_cast<int>(kMinPnPCorrespondences))
+    return false;
+
+  // Extract covariance from GTSAM Marginals
+  if (covariance) {
+    try {
+      // Rebuild graph with non-robust noise for meaningful covariance
+      gtsam::NonlinearFactorGraph cov_graph;
+      for (size_t i = 0; i < landmarks.size(); i++) {
+        if (!frame->getMapPoints()[kp_indices[i]])
+          continue; // skip rejected outliers
+        cov_graph.emplace_shared<FixedLandmarkProjectionFactor>(
+            measurements[i], pixel_noise, X(0), landmarks[i], gtsam_K_);
+      }
+      gtsam::Marginals marginals(cov_graph, result,
+                                 gtsam::Marginals::CHOLESKY);
+      *covariance = marginals.marginalCovariance(X(0));
+    } catch (const std::exception &) {
+      // Fallback: default diagonal covariance
+      *covariance = Eigen::Matrix<double, 6, 6>::Identity() * 0.01;
+    }
+  }
 
   return true;
 }

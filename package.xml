@@ -19,6 +19,7 @@
   <depend>Eigen3</depend>
 
   <depend>OpenCV</depend>
+  <depend>GTSAM</depend>
 
 <exec_depend>ros2launch</exec_depend>
 

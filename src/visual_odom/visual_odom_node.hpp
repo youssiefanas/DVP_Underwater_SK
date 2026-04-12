@@ -144,6 +144,7 @@ private:
 
     /// CLAHE histogram equalizer (created once, reused every frame).
     cv::Ptr<cv::CLAHE> clahe_;
+    bool clahe_enabled_{false};
 
     // ── Camera model ──────────────────────────────────────────────────────
 
@@ -167,10 +168,9 @@ private:
 
     // ── Named constants ───────────────────────────────────────────────────
 
-    static constexpr double kClaheClipLimit = 3.0;         ///< CLAHE contrast clip limit.
-    static constexpr int kClaheTileSize = 8;               ///< CLAHE tile grid dimension.
     static constexpr double kDistortionEpsilon = 1e-12;    ///< Threshold to detect non-zero distortion.
     static constexpr int kTrajectoryPubQueueSize = 10;     ///< Publisher queue depth for the path topic.
+    static constexpr size_t kMaxPathPoses = 500;             ///< Max poses kept in the published path message.
 };
 
 } // namespace visual_odom

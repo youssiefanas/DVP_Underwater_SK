@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(dv_slam)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 99)
 endif()
@@ -15,6 +19,7 @@ endif()
 # find dependencies
 find_package(ament_cmake_auto REQUIRED)
 ament_auto_find_build_dependencies()
+find_package(GTSAM REQUIRED)
 
 set (OPENCV_LIBS
   ${OpenCV_LIBS}
@@ -45,6 +50,7 @@ target_include_directories(${PROJECT_NAME}_frontend PUBLIC
 
 target_link_libraries(${PROJECT_NAME}_frontend
  ${OPENCV_LIBS}
+ gtsam
 )
 
 ament_auto_add_executable(vo_node 

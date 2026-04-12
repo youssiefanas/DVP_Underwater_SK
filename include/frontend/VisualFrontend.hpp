@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -22,6 +23,16 @@ class FeatureExtractor;
 class FeatureMatcher;
 struct ORBParams;
 class PoseEstimator;
+
+/**
+ * @brief Per-frame timing breakdown (all values in milliseconds).
+ */
+struct FrameTiming {
+  double extraction_ms = 0.0;   ///< ORB feature extraction.
+  double tracking_ms = 0.0;     ///< State machine (matching + PnP + KF insertion).
+  double viewer_ms = 0.0;       ///< Viewer drawing (0 if disabled).
+  double total_ms = 0.0;        ///< Total handleImage time.
+};
 
 /**
  * @brief Tracking stage of the frontend state machine.
@@ -123,6 +134,9 @@ public:
     const Eigen::Matrix<double, 6, 6> &getLastCovariance() const {
         return last_covariance_;
     }
+
+    /// @brief Get per-frame timing breakdown from the last handleImage call.
+    const FrameTiming &getLastTiming() const { return last_timing_; }
 
 private:
     // ─── Internal pipeline stages ────────────────────────────────
@@ -294,17 +308,17 @@ private:
     void relocateFromReferenceKF(Frame::Ptr current_frame);
 
     /**
-     * @brief Run PnP pose estimation with RANSAC and inlier threshold enforcement.
+     * @brief Run PnP RANSAC for initial pose + outlier rejection.
      *
      * Delegates to PoseEstimator::estimateRefined(). Logs and returns false
      * if PnP fails or the inlier count is below kMinPnPInliers.
+     * Does NOT compute covariance — that is handled by motionOnlyBA.
      *
      * @param current_frame       Frame whose pose will be refined.
      * @param[out] pnp_inliers    Number of PnP inliers on success.
      * @return true if PnP succeeded with enough inliers.
      */
-    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers,
-                  Eigen::Matrix<double, 6, 6> *covariance = nullptr);
+    bool solvePnP(Frame::Ptr current_frame, int &pnp_inliers);
 
     /**
      * @brief Reject implausible pose jumps between the predicted and actual pose.
@@ -400,6 +414,9 @@ private:
     /// Latest pose covariance from PnP (updated each successful track).
     Eigen::Matrix<double, 6, 6> last_covariance_{
         Eigen::Matrix<double, 6, 6>::Identity() * 0.03};
+
+    /// Per-frame timing breakdown (populated by handleImage).
+    FrameTiming last_timing_;
 
     // ─── KeyFrame insertion thresholds ───────────────────────────
     int frames_since_last_kf_ = 0;                          ///< Frame counter since last KF.
