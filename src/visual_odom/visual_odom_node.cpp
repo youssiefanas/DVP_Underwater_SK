@@ -31,8 +31,12 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
   visual_frontend_ = std::make_shared<frontend::VisualFrontend>(
       orb_params, K_, dist_coeffs_, init_scale, enable_viewer_);
 
-  clahe_ = cv::createCLAHE(kClaheClipLimit,
-                            cv::Size(kClaheTileSize, kClaheTileSize));
+  clahe_enabled_ = this->declare_parameter("clahe.enabled", true);
+  const double clahe_clip_limit =
+      this->declare_parameter("clahe.clip_limit", 3.0);
+  const int clahe_tile_size = this->declare_parameter("clahe.tile_size", 8);
+  clahe_ = cv::createCLAHE(clahe_clip_limit,
+                            cv::Size(clahe_tile_size, clahe_tile_size));
 
   openTrajectoryFile();
 
@@ -288,6 +292,9 @@ cv::Mat VisualOdomNode::preprocessImage(const cv::Mat &raw) {
   }
 
   // 3. CLAHE contrast enhancement (helps feature detection in dark/bright areas).
+  if (!clahe_enabled_) {
+    return undistorted;
+  }
   cv::Mat enhanced;
   clahe_->apply(undistorted, enhanced);
   return enhanced;
