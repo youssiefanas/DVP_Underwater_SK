@@ -181,6 +181,9 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
       last_frame_ = current_frame;
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
     }
+    // what if initialization fails? we could try to initialize again with the next frame, 
+    // but that might be tricky to get right and could cause weird edge cases, so for now we
+    // just stay in the initializing stage and keep trying until it succeeds (or the user resets it)
     frames_since_last_kf_++;
     return ok;
   }
