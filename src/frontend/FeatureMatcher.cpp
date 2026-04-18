@@ -1,10 +1,23 @@
 #include "frontend/FeatureMatcher.hpp"
+#include <cstdint>
 #include <iostream>
 
 namespace frontend {
 
 // ─── Spatial grid for fast radius lookup ─────────────────────────
 namespace {
+
+// Hamming distance for 32-byte ORB descriptors: XOR + popcount over 4×uint64.
+// Avoids cv::Mat header allocation and OpenCV's generic norm dispatch in the
+// projection-matching inner loop.
+static inline int hamming32(const uchar *a, const uchar *b) {
+  const uint64_t *pa = reinterpret_cast<const uint64_t *>(a);
+  const uint64_t *pb = reinterpret_cast<const uint64_t *>(b);
+  return __builtin_popcountll(pa[0] ^ pb[0]) +
+         __builtin_popcountll(pa[1] ^ pb[1]) +
+         __builtin_popcountll(pa[2] ^ pb[2]) +
+         __builtin_popcountll(pa[3] ^ pb[3]);
+}
 
 class KeypointGrid {
 public:
@@ -123,6 +136,11 @@ int FeatureMatcher::matchByProjection(
   const auto &keypoints = frame->getKeypoints();
   const cv::Mat &descriptors = frame->getDescriptors();
 
+  // hamming32() assumes 32-byte ORB descriptors; bail out if that ever changes.
+  if (descriptors.cols != 32 || descriptors.type() != CV_8U ||
+      !descriptors.isContinuous())
+    return 0;
+
   // Build spatial grid once — cell size = search_radius so a radius query
   // touches at most 3×3 = 9 cells instead of all keypoints.
   KeypointGrid grid(keypoints, frame->accessMapPoints(), img_cols, img_rows,
@@ -132,8 +150,8 @@ int FeatureMatcher::matchByProjection(
   for (const auto &mp : map_points) {
     if (!mp || mp->isBad_)
       continue;
-    if (mp->descriptor_.empty())
-      continue; // Guard: need a descriptor to match
+    if (mp->descriptor_.empty() || mp->descriptor_.cols != 32)
+      continue; // Guard: need a 32-byte descriptor to match
 
     // 1. Transform to camera frame
     Eigen::Vector3d p_cam = T_c_w * mp->position_;
@@ -157,6 +175,8 @@ int FeatureMatcher::matchByProjection(
     grid.getCandidates(static_cast<float>(u), static_cast<float>(v),
                        search_radius, candidates);
 
+    const uchar *mp_desc = mp->descriptor_.ptr<uchar>(0);
+
     for (int j : candidates) {
       if (frame->accessMapPoints()[j])
         continue; // Already matched by an earlier map point in this call
@@ -167,8 +187,7 @@ int FeatureMatcher::matchByProjection(
       if (dx * dx + dy * dy > search_r2)
         continue;
 
-      int dist =
-          cv::norm(mp->descriptor_, descriptors.row(j), cv::NORM_HAMMING);
+      int dist = hamming32(mp_desc, descriptors.ptr<uchar>(j));
       if (dist < best_dist) {
         second_best_dist = best_dist;
         best_dist = dist;
