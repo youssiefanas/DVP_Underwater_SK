@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -65,6 +66,16 @@ public:
      */
     void setPose(const Pose3d& pose);
 
+    /**
+     * @brief Set an IMU-derived attitude prior for this frame's pose.
+     * @param R_world_camera  Camera-frame rotation reconstructed from IMU
+     *                        (R_world_imu * R_imu_camera).
+     */
+    void setAttitudePrior(const Eigen::Matrix3d& R_world_camera);
+
+    /// @brief Get the attitude prior, if one was set; nullopt otherwise.
+    const std::optional<Eigen::Matrix3d>& getAttitudePrior() const;
+
     /// @brief Get the detected keypoints (read-only).
     const std::vector<cv::KeyPoint>& getKeypoints() const;
 
@@ -99,6 +110,8 @@ private:
     cv::Mat descriptors_;
 
     std::vector<MapPoint::Ptr> map_points_;
+
+    std::optional<Eigen::Matrix3d> attitude_prior_R_world_camera_;
 
     static size_t next_id_;
 };

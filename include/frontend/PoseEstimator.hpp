@@ -116,10 +116,24 @@ public:
     bool motionOnlyBA(Frame::Ptr frame, int *inlier_count = nullptr,
                       Eigen::Matrix<double, 6, 6> *covariance = nullptr);
 
+    /**
+     * @brief Configure the IMU-derived roll/pitch prior used in motionOnlyBA.
+     *
+     * Both sigmas must be > 0 to enable the prior. The factor is added only
+     * for frames that carry an attitude prior (see Frame::setAttitudePrior).
+     *
+     * @param roll_sigma_rad   Std-dev on rotation about the camera-z (roll), radians.
+     * @param pitch_sigma_rad  Std-dev on rotation about the camera-x (pitch), radians.
+     */
+    void setAttitudePriorSigmas(double roll_sigma_rad, double pitch_sigma_rad);
+
   private:
     cv::Mat K_;            ///< Cached 3x3 camera intrinsic matrix.
     cv::Mat dist_coeffs_;  ///< Distortion coefficients (zeros — undistorted input assumed).
     std::shared_ptr<gtsam::Cal3_S2> gtsam_K_; ///< GTSAM calibration (created in setIntrinsics).
+
+    double roll_sigma_rad_ = 0.0;   ///< 0 disables the roll component of the prior.
+    double pitch_sigma_rad_ = 0.0;  ///< 0 disables the pitch component of the prior.
 
     static constexpr size_t kMinEssentialPoints = 5;      ///< Min inliers for Essential matrix.
     static constexpr size_t kMinPnPCorrespondences = 10;   ///< Min 3D-2D pairs for PnP.

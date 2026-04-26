@@ -6,12 +6,16 @@
 
 #include "cv_bridge/cv_bridge.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "image_transport/image_transport.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 
+#include "frontend/ImuBuffer.hpp"
 #include "frontend/VisualFrontend.hpp"
 
 namespace visual_odom {
@@ -53,6 +57,17 @@ private:
                                   rmw_qos_profile_t &image_qos);
 
     /**
+     * @brief Declare and load IMU-related ROS parameters.
+     *
+     * Populates R_cam_imu_, imu_max_dt_seconds_, imu_enabled_, forwards roll/
+     * pitch sigmas to the visual frontend, and returns the topic to subscribe
+     * to (empty string if IMU is disabled).
+     *
+     * @param[out] imu_topic  Topic name to subscribe to (output param).
+     */
+    void declareAndLoadImuParameters(std::string &imu_topic);
+
+    /**
      * @brief Configure camera intrinsics, distortion, and undistortion maps.
      *
      * Reads the declared camera parameters, builds K_ and dist_coeffs_,
@@ -72,6 +87,13 @@ private:
      * @param msg  Incoming camera image.
      */
     void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &msg);
+
+    /**
+     * @brief IMU subscription callback — pushes orientation samples into the
+     *        time-keyed buffer for image-time lookup.
+     * @param msg  Incoming IMU message; orientation field is required.
+     */
+    void imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr &msg);
 
     /**
      * @brief Convert a raw (possibly colour) image to a preprocessed grayscale
@@ -102,10 +124,16 @@ private:
      * @param covariance  6x6 covariance [rot(3), trans(3)].
      * @return Populated Odometry message.
      */
-    static nav_msgs::msg::Odometry toOdometry(
+    nav_msgs::msg::Odometry toOdometry(
         const builtin_interfaces::msg::Time &stamp,
         const frontend::Pose3d &pose,
-        const Eigen::Matrix<double, 6, 6> &covariance);
+        const Eigen::Matrix<double, 6, 6> &covariance) const;
+
+    /**
+     * @brief Broadcast a TF from frame_id_ to child_frame_id_ for the given pose.
+     */
+    void broadcastPoseTransform(const builtin_interfaces::msg::Time &stamp,
+                                const frontend::Pose3d &pose);
 
     /**
      * @brief Lazily build fisheye undistortion remap tables.
@@ -130,6 +158,25 @@ private:
     /// Image transport subscriber (supports compressed topics).
     image_transport::Subscriber image_subscriber_;
 
+    /// IMU subscription (created only when imu.enabled is true).
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscriber_;
+
+    /// Buffer of recent IMU world-frame attitudes, queried at image time.
+    frontend::ImuBuffer imu_buffer_;
+
+    /// Camera-from-IMU rotation (R_cam_imu) loaded from a ROS parameter.
+    Eigen::Matrix3d R_cam_imu_{Eigen::Matrix3d::Identity()};
+
+    /// True when an IMU subscriber is active.
+    bool imu_enabled_{false};
+
+    /// Max image↔IMU timestamp gap for the prior to be applied (seconds).
+    double imu_max_dt_seconds_{0.02};
+
+    /// Counters for periodic logging of IMU-prior availability.
+    size_t imu_query_hits_{0};
+    size_t imu_query_misses_{0};
+
     /// Core visual SLAM frontend.
     std::shared_ptr<frontend::VisualFrontend> visual_frontend_;
 
@@ -139,8 +186,20 @@ private:
     /// Odometry publisher (pose with covariance).
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
 
+    /// TF broadcaster for the camera pose (parent → child).
+    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+
     /// Accumulated path message (grows with each tracked frame).
     nav_msgs::msg::Path path_msg_;
+
+    /// Parent frame for published trajectory and TF (configurable).
+    std::string frame_id_{"map"};
+
+    /// Child frame for published odometry and TF (configurable).
+    std::string child_frame_id_{"camera"};
+
+    /// Whether to broadcast a TF for the camera pose each frame.
+    bool publish_tf_{true};
 
     /// CLAHE histogram equalizer (created once, reused every frame).
     cv::Ptr<cv::CLAHE> clahe_;

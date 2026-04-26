@@ -93,7 +93,8 @@ VisualFrontend::VisualFrontend(const ORBParams &params, const cv::Mat &K,
 // PUBLIC ENTRY POINT
 // ─────────────────────────────────────────────────────────────────
 
-bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
+bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp,
+                                 std::optional<Eigen::Matrix3d> attitude_prior) {
   using Clock = std::chrono::steady_clock;
   if (gray_image.empty()) {
     std::cerr << "[Frontend] Received empty image, skipping frame."
@@ -104,6 +105,9 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
   const auto t0 = Clock::now();
 
   Frame::Ptr frame = Frame::createFrame(gray_image, timestamp);
+  if (attitude_prior.has_value()) {
+    frame->setAttitudePrior(*attitude_prior);
+  }
   extractFeatures(frame);
 
   const auto t1 = Clock::now();
@@ -139,6 +143,13 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
 
 void VisualFrontend::extractFeatures(Frame::Ptr frame) {
   feature_extractor_->extract(*frame);
+}
+
+void VisualFrontend::setImuPriorSigmas(double roll_sigma_rad,
+                                       double pitch_sigma_rad) {
+  if (pose_estimator_) {
+    pose_estimator_->setAttitudePriorSigmas(roll_sigma_rad, pitch_sigma_rad);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────

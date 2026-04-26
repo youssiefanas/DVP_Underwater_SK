@@ -28,6 +28,26 @@
       # Start near fr2_xyz scale; fine-tune using evo APE after first run.
       init_scale: 0.1
 
+    # TF / RViz framing.
+    # frame_id is the parent frame for the published trajectory, odometry, and TF.
+    # Set this to a frame that already lives in the wider TF tree (e.g. mimosa_map)
+    # to visualise the visual odom alongside other nodes in the same RViz window.
+    frame_id: "map"
+    child_frame_id: "vo_camera"
+    publish_tf: true
+
+    imu:
+      enabled: true              # false disables the subscriber and prior entirely (zero overhead).
+      topic: "/imu/data"         # sensor_msgs/Imu topic; orientation field must be populated.
+      max_dt_seconds: 0.02       # Max allowed gap between image and nearest IMU sample (~½ frame at 30 Hz).
+      roll_sigma_deg: 5.0        # Soft prior std-dev on camera roll (rotation about cam-z).
+      pitch_sigma_deg: 5.0       # Soft prior std-dev on camera pitch (rotation about cam-x). Yaw is left free.
+      # Camera-from-IMU rotation (R_cam_imu), 9 elements, row-major.
+      # Default = identity, i.e. IMU frame == camera frame. Override per-platform.
+      R_cam_imu: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0]
+
     # output:
     #   save_tum_trajectory: true
     #   tum_trajectory_path: "vo_trajectory_tum.txt"

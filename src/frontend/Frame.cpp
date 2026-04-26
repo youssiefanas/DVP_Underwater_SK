@@ -27,6 +27,13 @@ const cv::Mat &Frame::getImage() const { return image_; }
 const Pose3d &Frame::getPose() const { return pose_; }
 void Frame::setPose(const Pose3d &pose) { pose_ = pose; }
 
+void Frame::setAttitudePrior(const Eigen::Matrix3d &R_world_camera) {
+  attitude_prior_R_world_camera_ = R_world_camera;
+}
+const std::optional<Eigen::Matrix3d> &Frame::getAttitudePrior() const {
+  return attitude_prior_R_world_camera_;
+}
+
 const std::vector<cv::KeyPoint> &Frame::getKeypoints() const {
   return keypoints_;
 }

@@ -101,11 +101,23 @@ public:
      * Extracts features, dispatches to the current pipeline stage, and
      * optionally updates the viewer.
      *
-     * @param image      Grayscale input image (must not be empty).
-     * @param timestamp  Capture time of the image (seconds).
+     * @param image           Grayscale input image (must not be empty).
+     * @param timestamp       Capture time of the image (seconds).
+     * @param attitude_prior  Optional camera-frame rotation derived from IMU
+     *                        (R_world_camera). When present, motion-only BA
+     *                        will add a roll/pitch prior factor.
      * @return true if the frame was successfully processed (tracking valid).
      */
-    bool handleImage(const cv::Mat& image, double timestamp);
+    bool handleImage(const cv::Mat& image, double timestamp,
+                     std::optional<Eigen::Matrix3d> attitude_prior =
+                         std::nullopt);
+
+    /**
+     * @brief Configure the IMU roll/pitch prior used in motion-only BA.
+     * @param roll_sigma_rad   Std-dev for roll (radians). 0 disables.
+     * @param pitch_sigma_rad  Std-dev for pitch (radians). 0 disables.
+     */
+    void setImuPriorSigmas(double roll_sigma_rad, double pitch_sigma_rad);
 
     /**
      * @brief Process a pre-built Frame through the state machine.

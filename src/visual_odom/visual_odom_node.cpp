@@ -31,6 +31,9 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
   visual_frontend_ = std::make_shared<frontend::VisualFrontend>(
       orb_params, K_, dist_coeffs_, init_scale, enable_viewer_);
 
+  std::string imu_topic;
+  declareAndLoadImuParameters(imu_topic);
+
   clahe_enabled_ = this->declare_parameter("clahe.enabled", true);
   const double clahe_clip_limit =
       this->declare_parameter("clahe.clip_limit", 3.0);
@@ -47,14 +50,33 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
       std::bind(&VisualOdomNode::imageCallback, this, std::placeholders::_1),
       transport, image_qos);
 
+  if (imu_enabled_) {
+    rclcpp::QoS imu_qos(rclcpp::KeepLast(200));
+    imu_qos.best_effort();
+    imu_subscriber_ = this->create_subscription<sensor_msgs::msg::Imu>(
+        imu_topic, imu_qos,
+        std::bind(&VisualOdomNode::imuCallback, this, std::placeholders::_1));
+    RCLCPP_INFO(this->get_logger(),
+                "IMU prior enabled. topic=%s max_dt=%.3fs",
+                imu_topic.c_str(), imu_max_dt_seconds_);
+  }
+
   path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
       "trajectory", kTrajectoryPubQueueSize);
   odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(
       "odometry", kTrajectoryPubQueueSize);
-  path_msg_.header.frame_id = "map";
+  path_msg_.header.frame_id = frame_id_;
 
-  RCLCPP_INFO(this->get_logger(), "Visual Odom Node initialized. topic=%s",
-              image_topic.c_str());
+  if (publish_tf_) {
+    tf_broadcaster_ =
+        std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "Visual Odom Node initialized. topic=%s frame_id=%s "
+              "child_frame_id=%s publish_tf=%s",
+              image_topic.c_str(), frame_id_.c_str(),
+              child_frame_id_.c_str(), publish_tf_ ? "true" : "false");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -118,6 +140,64 @@ void VisualOdomNode::declareAndLoadParameters(
       this->declare_parameter("output.save_tum_trajectory", true);
   tum_trajectory_path_ = this->declare_parameter(
       "output.tum_trajectory_path", std::string("vo_trajectory_tum.txt"));
+
+  // --- TF / frame ids ---
+  frame_id_ =
+      this->declare_parameter("frame_id", std::string("map"));
+  child_frame_id_ =
+      this->declare_parameter("child_frame_id", std::string("camera"));
+  publish_tf_ = this->declare_parameter("publish_tf", true);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IMU parameters
+// ═══════════════════════════════════════════════════════════════════════════
+
+void VisualOdomNode::declareAndLoadImuParameters(std::string &imu_topic) {
+  imu_enabled_ = this->declare_parameter("imu.enabled", true);
+  imu_topic = this->declare_parameter("imu.topic", std::string("/imu/data"));
+  imu_max_dt_seconds_ = this->declare_parameter("imu.max_dt_seconds", 0.02);
+
+  const double roll_sigma_deg =
+      this->declare_parameter("imu.roll_sigma_deg", 5.0);
+  const double pitch_sigma_deg =
+      this->declare_parameter("imu.pitch_sigma_deg", 5.0);
+  if (visual_frontend_) {
+    visual_frontend_->setImuPriorSigmas(roll_sigma_deg * M_PI / 180.0,
+                                         pitch_sigma_deg * M_PI / 180.0);
+  }
+
+  // R_cam_imu: 9 doubles, row-major. Default is identity.
+  const std::vector<double> kIdentity9 = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const std::vector<double> R_flat =
+      this->declare_parameter("imu.R_cam_imu", kIdentity9);
+
+  R_cam_imu_.setIdentity();
+  if (R_flat.size() != 9) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "imu.R_cam_imu must be 9 elements (got %zu). Using identity.",
+                 R_flat.size());
+  } else {
+    Eigen::Matrix3d R;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        R(i, j) = R_flat[i * 3 + j];
+      }
+    }
+    // Sanity-check orthonormality (R^T R ≈ I, det ≈ +1).
+    const double ortho_err = (R.transpose() * R - Eigen::Matrix3d::Identity())
+                                 .cwiseAbs()
+                                 .maxCoeff();
+    const double det = R.determinant();
+    if (ortho_err > 1e-3 || std::abs(det - 1.0) > 1e-3) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "imu.R_cam_imu is not a valid rotation matrix "
+                   "(ortho_err=%.4g, det=%.4g). Using identity.",
+                   ortho_err, det);
+    } else {
+      R_cam_imu_ = R;
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -243,7 +323,28 @@ void VisualOdomNode::imageCallback(
     const double timestamp =
         msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
-    if (!visual_frontend_->handleImage(frontend_image, timestamp)) {
+    std::optional<Eigen::Matrix3d> attitude_prior;
+    if (imu_enabled_) {
+      auto R_world_imu =
+          imu_buffer_.queryAttitudeAt(timestamp, imu_max_dt_seconds_);
+      if (R_world_imu) {
+        attitude_prior = (*R_world_imu) * R_cam_imu_;
+        imu_query_hits_++;
+      } else {
+        imu_query_misses_++;
+      }
+      const size_t total = imu_query_hits_ + imu_query_misses_;
+      if (total > 0 && total % 100 == 0) {
+        RCLCPP_INFO(this->get_logger(),
+                    "IMU prior: %zu/%zu frames matched (%.1f%%, buffer=%zu)",
+                    imu_query_hits_, total,
+                    100.0 * imu_query_hits_ / static_cast<double>(total),
+                    imu_buffer_.size());
+      }
+    }
+
+    if (!visual_frontend_->handleImage(frontend_image, timestamp,
+                                        attitude_prior)) {
       return;
     }
 
@@ -263,6 +364,20 @@ void VisualOdomNode::imageCallback(
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
   }
+}
+
+void VisualOdomNode::imuCallback(
+    const sensor_msgs::msg::Imu::ConstSharedPtr &msg) {
+  const auto &q = msg->orientation;
+  // Some drivers publish all-zero orientation before their EKF converges.
+  if (q.x == 0.0 && q.y == 0.0 && q.z == 0.0 && q.w == 0.0) {
+    return;
+  }
+  const double timestamp =
+      msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
+  Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
+  eq.normalize();
+  imu_buffer_.push(timestamp, eq.toRotationMatrix());
 }
 
 cv::Mat VisualOdomNode::preprocessImage(const cv::Mat &raw) {
@@ -327,17 +442,44 @@ void VisualOdomNode::publishAndLogPose(
   }
   path_pub_->publish(path_msg_);
 
+  broadcastPoseTransform(stamp, pose);
+
   appendTumPose(rclcpp::Time(stamp), pose);
+}
+
+void VisualOdomNode::broadcastPoseTransform(
+    const builtin_interfaces::msg::Time &stamp,
+    const frontend::Pose3d &pose) {
+  if (!tf_broadcaster_) {
+    return;
+  }
+  geometry_msgs::msg::TransformStamped tf_msg;
+  tf_msg.header.stamp = stamp;
+  tf_msg.header.frame_id = frame_id_;
+  tf_msg.child_frame_id = child_frame_id_;
+
+  const auto &t = pose.translation();
+  tf_msg.transform.translation.x = t.x();
+  tf_msg.transform.translation.y = t.y();
+  tf_msg.transform.translation.z = t.z();
+
+  const Eigen::Quaterniond q(pose.linear());
+  tf_msg.transform.rotation.x = q.x();
+  tf_msg.transform.rotation.y = q.y();
+  tf_msg.transform.rotation.z = q.z();
+  tf_msg.transform.rotation.w = q.w();
+
+  tf_broadcaster_->sendTransform(tf_msg);
 }
 
 nav_msgs::msg::Odometry VisualOdomNode::toOdometry(
     const builtin_interfaces::msg::Time &stamp,
     const frontend::Pose3d &pose,
-    const Eigen::Matrix<double, 6, 6> &covariance) {
+    const Eigen::Matrix<double, 6, 6> &covariance) const {
   nav_msgs::msg::Odometry msg;
   msg.header.stamp = stamp;
-  msg.header.frame_id = "map";
-  msg.child_frame_id = "camera";
+  msg.header.frame_id = frame_id_;
+  msg.child_frame_id = child_frame_id_;
 
   const auto &t = pose.translation();
   msg.pose.pose.position.x = t.x();

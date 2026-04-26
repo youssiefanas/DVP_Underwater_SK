@@ -10,6 +10,7 @@
 
 #include <gtsam/geometry/PinholeCamera.h>
 #include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Rot3.h>
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
@@ -17,6 +18,7 @@
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
+#include <gtsam/slam/PoseRotationPrior.h>
 
 namespace frontend {
 
@@ -34,6 +36,12 @@ void PoseEstimator::setIntrinsics(const cv::Mat &K,
   double cx = K.at<double>(0, 2);
   double cy = K.at<double>(1, 2);
   gtsam_K_ = std::make_shared<gtsam::Cal3_S2>(fx, fy, s, cx, cy);
+}
+
+void PoseEstimator::setAttitudePriorSigmas(double roll_sigma_rad,
+                                           double pitch_sigma_rad) {
+  roll_sigma_rad_ = roll_sigma_rad;
+  pitch_sigma_rad_ = pitch_sigma_rad;
 }
 
 // ─── 2D-2D: Essential matrix (initialization only) ──────────────
@@ -195,6 +203,24 @@ bool PoseEstimator::motionOnlyBA(Frame::Ptr frame, int *inlier_count,
         measurements[i], robust_noise, X(0), landmarks[i], gtsam_K_);
   }
 
+  // Optional IMU-derived roll/pitch prior on rotation. Sigmas are in body-frame
+  // tangent components (rx, ry, rz) ≈ (pitch about cam-x, yaw about cam-y,
+  // roll about cam-z). Yaw is left effectively unconstrained.
+  const bool prior_enabled = frame->getAttitudePrior().has_value() &&
+                             roll_sigma_rad_ > 0.0 && pitch_sigma_rad_ > 0.0;
+  gtsam::SharedNoiseModel rot_prior_noise;
+  gtsam::Pose3 rot_prior_pose;
+  if (prior_enabled) {
+    constexpr double kYawFreeSigma = 1e3;
+    gtsam::Vector3 sigmas(pitch_sigma_rad_, kYawFreeSigma, roll_sigma_rad_);
+    rot_prior_noise = gtsam::noiseModel::Diagonal::Sigmas(sigmas);
+    rot_prior_pose =
+        gtsam::Pose3(gtsam::Rot3(*frame->getAttitudePrior()),
+                     init_pose.translation());
+    graph.emplace_shared<gtsam::PoseRotationPrior<gtsam::Pose3>>(
+        X(0), rot_prior_pose, rot_prior_noise);
+  }
+
   // Optimize (converges fast from a good PnP init)
   gtsam::LevenbergMarquardtParams params;
   params.maxIterations = 10;
@@ -257,6 +283,10 @@ bool PoseEstimator::motionOnlyBA(Frame::Ptr frame, int *inlier_count,
           continue; // skip rejected outliers
         cov_graph.emplace_shared<FixedLandmarkProjectionFactor>(
             measurements[i], pixel_noise, X(0), landmarks[i], gtsam_K_);
+      }
+      if (prior_enabled) {
+        cov_graph.emplace_shared<gtsam::PoseRotationPrior<gtsam::Pose3>>(
+            X(0), rot_prior_pose, rot_prior_noise);
       }
       gtsam::Marginals marginals(cov_graph, result,
                                  gtsam::Marginals::CHOLESKY);
