@@ -151,6 +151,10 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
   switch (stage_) {
 
   case Stage::NO_IMAGES_YET: {
+    if (initial_pose_override_) {
+      last_good_pose_ = *initial_pose_override_;
+      initial_pose_override_.reset();
+    }
     current_frame->setPose(last_good_pose_);
     last_keyframe_ = KeyFrame::create(current_frame);
     last_keyframe_->registerMapPointObservations();
@@ -387,6 +391,17 @@ bool VisualFrontend::track(Frame::Ptr current_frame) {
 }
 
 void VisualFrontend::predictPose(Frame::Ptr current_frame) {
+  // Highest priority: a fresh MIMOSA pose hint extrapolated to this image's
+  // timestamp. Single-shot — consumed and cleared each call.
+  if (pending_hint_ && pending_hint_->valid &&
+      std::abs(current_frame->getTimestamp() - pending_hint_->timestamp) <=
+          max_hint_age_s_) {
+    current_frame->setPose(pending_hint_->T_w_cam);
+    pending_hint_.reset();
+    return;
+  }
+  pending_hint_.reset();  // stale → drop
+
   if (has_velocity_ && last_frame_) {
     current_frame->setPose(last_frame_->getPose() * velocity_);
   } else if (last_frame_) {
@@ -437,13 +452,43 @@ bool VisualFrontend::trackWithLocalMap(Frame::Ptr current_frame) {
     return false;
 
   // Phase 5: Motion-only Bundle Adjustment (refines pose, computes covariance)
+  // Optionally include a DVL translation prior to inject metric scale.
+  PoseEstimator::DvlTranslationPrior dvl_prior;
+  if (last_frame_) {
+    Eigen::Vector3d dp_w;
+    Eigen::Matrix3d cov_w;
+    if (buildDvlPrior(last_frame_->getTimestamp(),
+                      current_frame->getTimestamp(), last_frame_->getPose(),
+                      &dp_w, &cov_w)) {
+      dvl_prior.T_w_prev = last_frame_->getPose();
+      dvl_prior.dp_world = dp_w;
+      dvl_prior.cov_world = cov_w;
+      dvl_prior.valid = true;
+    }
+  }
+
   Eigen::Matrix<double, 6, 6> covariance;
   int ba_inliers = 0;
-  if (!pose_estimator_->motionOnlyBA(current_frame, &ba_inliers, &covariance)) {
+  if (!pose_estimator_->motionOnlyBA(current_frame, &ba_inliers, &covariance,
+                                     dvl_prior.valid ? &dvl_prior : nullptr)) {
     std::cout << "[Frontend] Motion-only BA failed" << std::endl;
     return false;
   }
   last_covariance_ = covariance;
+
+  // Scale-lock accounting: accumulate VO and DVL travel since init, then
+  // fire a one-shot Sim(3) rescale once we've moved enough.
+  if (!scale_locked_ && last_frame_) {
+    const Eigen::Vector3d dp_vo = current_frame->getPose().translation() -
+                                  last_frame_->getPose().translation();
+    cum_vo_dist_ += dp_vo.norm();
+    if (dvl_prior.valid) {
+      cum_dvl_dist_ += dvl_prior.dp_world.norm();
+    }
+    if (cum_vo_dist_ >= scale_lock_threshold_m_ && cum_dvl_dist_ > 0.0) {
+      lockScale();
+    }
+  }
 
   // Phase 6: Reject implausible pose jumps
   if (!validatePoseJump(predicted_pose, current_frame->getPose(), ba_inliers))
@@ -864,6 +909,148 @@ std::optional<FrontendOutput> VisualFrontend::consumeBackendOutput() {
 }
 KeyFrame::Ptr VisualFrontend::getLatestKeyFrame() const {
   return last_keyframe_;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// EXTERNAL INTEGRATION (MIMOSA + DVL)
+// ─────────────────────────────────────────────────────────────────
+
+void VisualFrontend::setInitialPose(const Pose3d &T_w_cam0) {
+  if (stage_ != Stage::NO_IMAGES_YET) {
+    return;  // First KF already created; ignore.
+  }
+  initial_pose_override_ = T_w_cam0;
+}
+
+void VisualFrontend::setBodyCamExtrinsic(const Pose3d &T_body_cam) {
+  T_body_cam_ = T_body_cam;
+}
+
+void VisualFrontend::pushDvlSample(const DvlSample &sample) {
+  dvl_buf_.push_back(sample);
+  // Evict samples older than dvl_buf_max_age_s_ relative to the newest.
+  const double newest = sample.t;
+  while (!dvl_buf_.empty() &&
+         (newest - dvl_buf_.front().t) > dvl_buf_max_age_s_) {
+    dvl_buf_.pop_front();
+  }
+}
+
+void VisualFrontend::setExternalPoseHint(const ExternalPoseHint &hint) {
+  pending_hint_ = hint;
+}
+
+bool VisualFrontend::buildDvlPrior(double t0, double t1,
+                                   const Pose3d &T_w_cam_prev,
+                                   Eigen::Vector3d *out_dp_world,
+                                   Eigen::Matrix3d *out_cov_world) const {
+  if (!out_dp_world || !out_cov_world)
+    return false;
+  if (t1 <= t0 || dvl_buf_.size() < 2)
+    return false;
+
+  // Trapezoidal integration of body-frame velocity over [t0, t1].
+  // Walks through the buffer, clipping the first/last segments to the
+  // exact interval and skipping segments where either endpoint has lost
+  // bottom_lock.
+  Eigen::Vector3d dp_body = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d cov_body = Eigen::Matrix3d::Zero();
+  double covered = 0.0;
+
+  for (size_t i = 0; i + 1 < dvl_buf_.size(); ++i) {
+    const auto &a = dvl_buf_[i];
+    const auto &b = dvl_buf_[i + 1];
+    const double seg_t0 = std::max(a.t, t0);
+    const double seg_t1 = std::min(b.t, t1);
+    if (seg_t1 <= seg_t0)
+      continue;
+    if (!a.bottom_lock || !b.bottom_lock)
+      continue;
+
+    // Linear interpolation of velocity at the clipped endpoints.
+    auto lerp_v = [&](double t) {
+      const double u = (t - a.t) / std::max(1e-9, b.t - a.t);
+      return a.v_body + u * (b.v_body - a.v_body);
+    };
+    const Eigen::Vector3d v0 = lerp_v(seg_t0);
+    const Eigen::Vector3d v1 = lerp_v(seg_t1);
+    const double dt = seg_t1 - seg_t0;
+
+    dp_body += 0.5 * (v0 + v1) * dt;
+    // Covariance accumulates as Σ cov_body * dt² (independent intervals).
+    cov_body += 0.5 * (a.cov_body + b.cov_body) * dt * dt;
+    covered += dt;
+  }
+
+  const double interval = t1 - t0;
+  if (covered < kMinDvlIntervalCoverage * interval)
+    return false;
+
+  // Rotate body-frame displacement and covariance into the world frame.
+  // T_w_body_prev = T_w_cam_prev * T_cam_body = T_w_cam_prev * T_body_cam_⁻¹.
+  const Pose3d T_w_body_prev = T_w_cam_prev * T_body_cam_.inverse();
+  const Eigen::Matrix3d R_w_body = T_w_body_prev.linear();
+  *out_dp_world = R_w_body * dp_body;
+  *out_cov_world = R_w_body * cov_body * R_w_body.transpose();
+
+  // Floor the covariance to avoid numerical singularity from zero motion.
+  const double floor = 1e-6;
+  for (int k = 0; k < 3; ++k)
+    (*out_cov_world)(k, k) = std::max((*out_cov_world)(k, k), floor);
+
+  return true;
+}
+
+void VisualFrontend::lockScale() {
+  if (scale_locked_ || cum_vo_dist_ <= 0.0 || cum_dvl_dist_ <= 0.0)
+    return;
+
+  const double s = cum_dvl_dist_ / cum_vo_dist_;
+  if (!std::isfinite(s) || s <= 0.0)
+    return;
+
+  // Pivot: world origin (or initial_pose_override_, which has been folded
+  // into last_good_pose_'s history). Since the first KF was placed at
+  // last_good_pose_ and that pose is the world reference, use it as p0.
+  // For the simple case where the world frame == first KF frame, p0 is the
+  // first KF's translation; in either case, all pose translations and map
+  // point positions are scaled around it.
+  Eigen::Vector3d p0 = Eigen::Vector3d::Zero();
+  // Find the oldest KF as the pivot (the first one created).
+  KeyFrame::Ptr pivot;
+  for (const auto &kf : map_->getAllKeyFrames()) {
+    if (!pivot || kf->getId() < pivot->getId())
+      pivot = kf;
+  }
+  if (pivot)
+    p0 = pivot->getPose().translation();
+
+  for (const auto &kf : map_->getAllKeyFrames()) {
+    Pose3d T = kf->getPose();
+    T.translation() = p0 + s * (T.translation() - p0);
+    kf->setPose(T);
+  }
+  for (const auto &mp : map_->getAllMapPoints()) {
+    if (!mp)
+      continue;
+    mp->position_ = p0 + s * (mp->position_ - p0);
+  }
+
+  // Update transient state mirroring KF/MapPoint scale.
+  if (last_frame_) {
+    Pose3d T = last_frame_->getPose();
+    T.translation() = p0 + s * (T.translation() - p0);
+    last_frame_->setPose(T);
+  }
+  last_good_pose_.translation() =
+      p0 + s * (last_good_pose_.translation() - p0);
+  velocity_.translation() *= s;
+
+  scale_locked_ = true;
+
+  std::cout << "[Frontend] Scale lock: s=" << s
+            << " (cum_vo=" << cum_vo_dist_
+            << ", cum_dvl=" << cum_dvl_dist_ << ")" << std::endl;
 }
 
 } // namespace frontend

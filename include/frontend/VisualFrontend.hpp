@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <optional>
 
@@ -137,6 +138,65 @@ public:
 
     /// @brief Get per-frame timing breakdown from the last handleImage call.
     const FrameTiming &getLastTiming() const { return last_timing_; }
+
+    // ─── External integration: MIMOSA pose hint, DVL velocity, origin alignment ──
+
+    /**
+     * @brief Override the world-frame pose used for the very first KeyFrame.
+     *
+     * Must be called before the first image is fed to handleImage(). After
+     * the first KF is created, subsequent calls are ignored. Used to align
+     * dv_slam's world frame with MIMOSA's mimosa_map at startup.
+     */
+    void setInitialPose(const Pose3d &T_w_cam0);
+
+    /**
+     * @brief Set the static camera-to-body extrinsic.
+     *
+     * Required to convert body-frame DVL velocity into the camera/world frame
+     * used internally by the frontend. Default is identity.
+     */
+    void setBodyCamExtrinsic(const Pose3d &T_body_cam);
+
+    /// @brief A single body-frame velocity sample from the DVL.
+    struct DvlSample {
+      double t = 0.0;                                          ///< Sample timestamp (seconds).
+      Eigen::Vector3d v_body{Eigen::Vector3d::Zero()};         ///< Body-frame linear velocity.
+      Eigen::Matrix3d cov_body{Eigen::Matrix3d::Identity() * 1e-4}; ///< Velocity covariance.
+      bool bottom_lock = true;                                 ///< False → sample is dropped.
+    };
+
+    /**
+     * @brief Push a DVL velocity sample into the frontend's ring buffer.
+     *
+     * Old samples (older than dvl_buf_max_age_s_) are evicted automatically.
+     * Samples with bottom_lock=false are stored but skipped during integration.
+     */
+    void pushDvlSample(const DvlSample &sample);
+
+    /// @brief A single-shot world-frame pose hint from MIMOSA.
+    struct ExternalPoseHint {
+      Pose3d T_w_cam{Pose3d::Identity()};                      ///< Predicted world-frame camera pose.
+      double timestamp = 0.0;                                  ///< Hint timestamp (seconds).
+      Eigen::Matrix<double, 6, 6> covariance =
+          Eigen::Matrix<double, 6, 6>::Identity() * 0.01;      ///< 6x6 [rot, trans].
+      bool valid = false;
+    };
+
+    /**
+     * @brief Stash an external pose hint to be consumed by the next predictPose().
+     *
+     * Single-shot: predictPose() consumes and clears the hint. If the hint's
+     * timestamp differs from the next image's by more than max_hint_age_s_,
+     * it is ignored and the velocity model is used instead.
+     */
+    void setExternalPoseHint(const ExternalPoseHint &hint);
+
+    /// @brief True once the frontend has transitioned to the TRACKING stage.
+    bool isInitialized() const { return stage_ == Stage::TRACKING; }
+
+    /// @brief True once the one-shot Sim(3) rescale has fired.
+    bool isScaleLocked() const { return scale_locked_; }
 
 private:
     // ─── Internal pipeline stages ────────────────────────────────
@@ -378,6 +438,35 @@ private:
      */
     void resetToInitializing();
 
+    /**
+     * @brief Build a DVL-derived translation prior for the [t0, t1] interval.
+     *
+     * Trapezoidally integrates dvl_buf_ samples spanning [t0, t1], drops
+     * samples with bottom_lock=false, and returns false if interval coverage
+     * is below kMinDvlIntervalCoverage. On success, fills @p out with
+     * world-frame displacement and 3x3 translation covariance.
+     *
+     * @param t0           Start of interval (seconds).
+     * @param t1           End of interval (seconds).
+     * @param T_w_cam_prev World pose of the previous camera (used to rotate
+     *                     body-frame displacement into world).
+     * @param[out] out_dp_world  Integrated translation in world frame.
+     * @param[out] out_cov_world 3x3 translation covariance in world frame.
+     * @return true if the interval has enough valid DVL coverage.
+     */
+    bool buildDvlPrior(double t0, double t1, const Pose3d &T_w_cam_prev,
+                       Eigen::Vector3d *out_dp_world,
+                       Eigen::Matrix3d *out_cov_world) const;
+
+    /**
+     * @brief One-shot Sim(3) rescaling: makes the existing map metric.
+     *
+     * Multiplies all KeyFrame translations and MapPoint positions by the
+     * DVL/VO ratio accumulated since init. After this call, scale_locked_
+     * is true and the continuous DVL prior is what maintains scale.
+     */
+    void lockScale();
+
 private:
     // ─── State ───────────────────────────────────────────────────
     Stage stage_;  ///< Current pipeline stage.
@@ -418,6 +507,28 @@ private:
     /// Per-frame timing breakdown (populated by handleImage).
     FrameTiming last_timing_;
 
+    // ─── External integration state ─────────────────────────────
+    /// Pending MIMOSA pose hint (single-shot, consumed in predictPose).
+    std::optional<ExternalPoseHint> pending_hint_;
+    /// First-KF origin override (applied in NO_IMAGES_YET).
+    std::optional<Pose3d> initial_pose_override_;
+    /// Maximum age of a pose hint relative to the current image timestamp.
+    double max_hint_age_s_ = 0.25;
+
+    /// Static camera-to-body extrinsic (used to rotate body-frame DVL
+    /// velocity into the camera/world frame).
+    Pose3d T_body_cam_{Pose3d::Identity()};
+
+    /// DVL ring buffer; samples older than dvl_buf_max_age_s_ are evicted.
+    std::deque<DvlSample> dvl_buf_;
+    double dvl_buf_max_age_s_ = 2.0;
+
+    // ─── Scale-lock state (one-shot Sim(3) rescaling) ───────────
+    bool scale_locked_ = false;
+    double cum_vo_dist_ = 0.0;             ///< Cumulative VO baseline since init.
+    double cum_dvl_dist_ = 0.0;            ///< Cumulative DVL displacement since init.
+    double scale_lock_threshold_m_ = 0.3;  ///< VO distance to trigger Sim(3) lock.
+
     // ─── KeyFrame insertion thresholds ───────────────────────────
     int frames_since_last_kf_ = 0;                          ///< Frame counter since last KF.
     static constexpr int kMinFramesBetweenKF = 5;           ///< Min frames before allowing a new KF.
@@ -444,6 +555,9 @@ private:
     static constexpr double kMaxTriangulationDist = 50.0;   ///< Max point distance from camera (map units).
     static constexpr double kMinParallaxDeg = 1.0;          ///< Min parallax angle for triangulation (degrees).
     static constexpr size_t kMinMatchesForInit = 20;        ///< Min valid matches to attempt initialization.
+
+    // ─── DVL prior thresholds ────────────────────────────────────
+    static constexpr double kMinDvlIntervalCoverage = 0.8;  ///< Min fraction of [t0,t1] that must be DVL-covered.
 };
 
 } // namespace frontend

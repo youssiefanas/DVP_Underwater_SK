@@ -12,6 +12,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 
+#include "frontend/Pose3d.hpp"
 #include "frontend/VisualFrontend.hpp"
 
 namespace visual_odom {
@@ -117,6 +118,42 @@ private:
      */
     void maybeBuildUndistortMaps(const cv::Size &image_size);
 
+    // ── External integration: MIMOSA pose injection + DVL velocity in ────
+
+    /**
+     * @brief Subscriber callback for MIMOSA's optimized state stream.
+     *
+     * Stores the latest pose+twist in `latest_mimosa_`, (on the first
+     * message, if `mimosa_use_origin_`) seeds the frontend's world frame,
+     * and (when `scale_enabled_`) forwards the body-frame twist as a DVL
+     * sample to the frontend.
+     */
+    void mimosaOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
+
+    /**
+     * @brief Build a pose hint for the frontend by extrapolating the latest
+     *        MIMOSA state to the given image timestamp using its body twist.
+     *
+     * @param t_img  Current image timestamp (seconds).
+     * @param[out] hint  Filled on success.
+     * @return true if a fresh, in-window MIMOSA state is available.
+     */
+    bool buildHintAt(double t_img,
+                     frontend::VisualFrontend::ExternalPoseHint *hint) const;
+
+    /**
+     * @brief Publish the visual odometry's latest KeyFrame pose as
+     *        nav_msgs/Odometry on the topic MIMOSA's odometry::Manager
+     *        subscribes to.
+     */
+    void publishToMimosa(const frontend::FrontendOutput &out);
+
+    /**
+     * @brief Parse a 7-element extrinsic [tx ty tz qx qy qz qw] parameter
+     *        into a Pose3d. Returns identity on malformed input.
+     */
+    static frontend::Pose3d parseExtrinsic(const std::vector<double> &v);
+
     /**
      * @brief Append a single pose line to the TUM trajectory file.
      * @param stamp  ROS timestamp.
@@ -165,6 +202,33 @@ private:
     bool save_tum_trajectory_{false};    ///< Whether TUM trajectory output is enabled.
     std::string tum_trajectory_path_;    ///< Output file path.
     std::ofstream tum_trajectory_file_;  ///< Open file stream (valid only when enabled).
+
+    // ── External integration: subs/pubs ──────────────────────────────────
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr mimosa_odom_sub_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr mimosa_odom_pub_;
+
+    // ── External integration: parameters ─────────────────────────────────
+    bool mimosa_inject_{false};       ///< Subscribe to graph/odometry and inject hints.
+    bool mimosa_publish_{false};      ///< Publish to odometry/manager/odometry_in.
+    bool mimosa_use_origin_{false};   ///< Adopt MIMOSA's pose at t=0 as world origin.
+    bool scale_enabled_{false};       ///< Subscribe to DVL and pipe samples to the frontend.
+    double max_hint_age_s_{0.25};
+    double cov_inflate_per_s_{1.0};
+    double dvl_max_var_{0.01};        ///< DVL trace(cov) threshold for bottom-lock heuristic.
+    frontend::Pose3d T_body_cam_{frontend::Pose3d::Identity()};
+
+    // ── External integration: latest MIMOSA state ────────────────────────
+    struct MimosaState {
+      frontend::Pose3d T_map_body{frontend::Pose3d::Identity()};
+      Eigen::Vector3d v_body{Eigen::Vector3d::Zero()};
+      Eigen::Vector3d omega_body{Eigen::Vector3d::Zero()};
+      Eigen::Matrix<double, 6, 6> cov{
+          Eigen::Matrix<double, 6, 6>::Identity() * 0.01};
+      double t = 0.0;
+      bool valid = false;
+    };
+    MimosaState latest_mimosa_;
+    bool mimosa_origin_seeded_{false};  ///< First MIMOSA pose has been pushed to setInitialPose.
 
     // ── Named constants ───────────────────────────────────────────────────
 

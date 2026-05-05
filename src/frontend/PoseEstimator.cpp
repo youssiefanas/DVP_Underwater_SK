@@ -1,5 +1,6 @@
 #include "frontend/PoseEstimator.hpp"
 #include "frontend/FixedLandmarkProjectionFactor.hpp"
+#include "frontend/TranslationPriorFactor.hpp"
 #include "dv_slam/utility.hpp"
 
 #include <Eigen/Eigenvalues>
@@ -145,7 +146,8 @@ bool PoseEstimator::estimateRefined(Frame::Ptr frame, int *inlier_count) {
 // ─── Motion-only Bundle Adjustment ──────────────────────────────
 
 bool PoseEstimator::motionOnlyBA(Frame::Ptr frame, int *inlier_count,
-                                 Eigen::Matrix<double, 6, 6> *covariance) {
+                                 Eigen::Matrix<double, 6, 6> *covariance,
+                                 const DvlTranslationPrior *dvl_prior) {
   if (!frame || !gtsam_K_) {
     if (inlier_count)
       *inlier_count = 0;
@@ -193,6 +195,14 @@ bool PoseEstimator::motionOnlyBA(Frame::Ptr frame, int *inlier_count,
   for (size_t i = 0; i < landmarks.size(); i++) {
     graph.emplace_shared<FixedLandmarkProjectionFactor>(
         measurements[i], robust_noise, X(0), landmarks[i], gtsam_K_);
+  }
+
+  // DVL translation prior: pulls translation toward T_w_prev + dp_world.
+  if (dvl_prior && dvl_prior->valid) {
+    gtsam::Point3 target = dvl_prior->T_w_prev.translation() + dvl_prior->dp_world;
+    auto trans_noise =
+        gtsam::noiseModel::Gaussian::Covariance(dvl_prior->cov_world);
+    graph.emplace_shared<TranslationPriorFactor>(X(0), target, trans_noise);
   }
 
   // Optimize (converges fast from a good PnP init)

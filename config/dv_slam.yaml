@@ -33,6 +33,32 @@
     #   tum_trajectory_path: "vo_trajectory_tum.txt"
 
 
+    # ── External integration (MIMOSA + DVL) ─────────────────────────────────
+    # All three top-level switches default to false so existing offline
+    # dataset runs (TUM, AquaSLAM2) are unaffected. Enable for live BlueROV2
+    # / OceanSim runs where MIMOSA is publishing /graph/odometry and the
+    # DVL driver is publishing body-frame velocity.
+    extrinsics:
+      # Static camera-to-body (BlueROV2). [tx, ty, tz, qx, qy, qz, qw].
+      # Default identity — set to actual camera mount on the live vehicle.
+      T_body_cam: [-0.21170000, -0.09723000, -0.05624000, -0.00985393, 0.71291971, -0.00245472, -0.70117214]
+
+    mimosa:
+      enable_pose_injection: true   # subscribe to /graph/odometry, inject as predictPose hints
+      enable_publish: true          # publish KF poses to /odometry/manager/odometry_in
+      use_origin: true              # adopt mimosa_map as VO world frame at startup
+      pose_topic_in:  "/mimosa_node/graph/odometry"
+      pose_topic_out: "/visual_odom/odometry_in"
+      max_hint_age_s: 0.25           # drop hints older than this (seconds)
+      cov_inflate_per_s: 1.0         # extra cov per second of extrapolation lag
+
+    scale:
+      # Continuous metric prior comes from MIMOSA's body-frame twist on
+      # `mimosa.pose_topic_in` (no separate DVL subscription — avoids coupling
+      # dv_slam to a specific DVL driver message type, e.g. Nortek vs Waterlinked).
+      enabled: true                 # forward MIMOSA twist as DVL samples to the frontend
+      dvl_max_var: 0.01              # bottom-lock heuristic: trace(twist linear cov) < this → trusted
+
     # ORB extractor params
     orb:
       n_features: 1500 # try 800 for faster runs, 2000 for more features.

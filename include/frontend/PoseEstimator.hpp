@@ -9,6 +9,7 @@
 #include <gtsam/geometry/Cal3_S2.h>
 
 #include "Frame.hpp"
+#include "Pose3d.hpp"
 
 namespace frontend {
 
@@ -96,6 +97,15 @@ public:
                      const cv::Mat &R, const cv::Mat &t,
                      std::vector<cv::Point3f> &points_3d);
 
+    /// Optional translation-only prior used inside motionOnlyBA() to inject
+    /// a metric DVL-derived displacement.
+    struct DvlTranslationPrior {
+      Pose3d T_w_prev{Pose3d::Identity()};        ///< Previous (frozen) world pose.
+      Eigen::Vector3d dp_world{Eigen::Vector3d::Zero()}; ///< World-frame displacement.
+      Eigen::Matrix3d cov_world{Eigen::Matrix3d::Identity() * 1e-2}; ///< 3x3 covariance.
+      bool valid = false;
+    };
+
     /**
      * @brief Motion-only Bundle Adjustment: optimize the frame's pose while
      *        holding all MapPoint positions fixed.
@@ -105,16 +115,24 @@ public:
      * robust kernel to down-weight remaining outliers. Extracts the 6x6
      * pose covariance from GTSAM Marginals.
      *
+     * If @p dvl_prior is non-null and valid, an additional translation-only
+     * prior factor pulls the pose's translation toward
+     * `T_w_prev.translation() + dp_world` with the supplied covariance.
+     * This injects a metric scale signal from DVL while leaving rotation
+     * to the visual evidence.
+     *
      * Call after PnP RANSAC has set an initial pose and removed gross
      * outliers.
      *
      * @param frame         Frame with pose initial guess and MapPoint associations.
      * @param[out] inlier_count  Number of inliers after post-BA outlier rejection.
      * @param[out] covariance    6x6 pose covariance [rot(3), trans(3)].
+     * @param dvl_prior     Optional DVL translation prior (nullptr → vision only).
      * @return true if optimization succeeded.
      */
     bool motionOnlyBA(Frame::Ptr frame, int *inlier_count = nullptr,
-                      Eigen::Matrix<double, 6, 6> *covariance = nullptr);
+                      Eigen::Matrix<double, 6, 6> *covariance = nullptr,
+                      const DvlTranslationPrior *dvl_prior = nullptr);
 
   private:
     cv::Mat K_;            ///< Cached 3x3 camera intrinsic matrix.

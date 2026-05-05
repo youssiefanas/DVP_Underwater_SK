@@ -53,6 +53,40 @@ VisualOdomNode::VisualOdomNode(const rclcpp::NodeOptions &options)
       "odometry", kTrajectoryPubQueueSize);
   path_msg_.header.frame_id = "map";
 
+  // Push extrinsics into the frontend so DVL body-frame velocity is rotated
+  // correctly into the camera/world frame during prior assembly.
+  visual_frontend_->setBodyCamExtrinsic(T_body_cam_);
+
+  // MIMOSA → VO: subscribe to /graph/odometry (configurable). The same
+  // subscription powers both the pose-hint injection (predictPose) and the
+  // continuous DVL-velocity-style scale prior — MIMOSA's twist is the body
+  // frame velocity from the iSAM2 solution (DVL/IMU dominated; VO contributes
+  // only via BetweenFactor on Pose3, not on velocity), so we treat it as a
+  // ready-to-use metric reference and avoid coupling dv_slam to a specific
+  // DVL driver message (Nortek vs Waterlinked).
+  if (mimosa_inject_ || scale_enabled_) {
+    const std::string topic_in = this->declare_parameter<std::string>(
+        "mimosa.pose_topic_in", "/graph/odometry");
+    mimosa_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        topic_in, rclcpp::SensorDataQoS().keep_last(20),
+        std::bind(&VisualOdomNode::mimosaOdomCallback, this,
+                  std::placeholders::_1));
+    RCLCPP_INFO(this->get_logger(),
+                "Subscribed to %s (pose_inject=%d, scale=%d)", topic_in.c_str(),
+                static_cast<int>(mimosa_inject_),
+                static_cast<int>(scale_enabled_));
+  }
+
+  // VO → MIMOSA: publish to /odometry/manager/odometry_in (configurable).
+  if (mimosa_publish_) {
+    const std::string topic_out = this->declare_parameter<std::string>(
+        "mimosa.pose_topic_out", "/visual_odom/odometry_in");
+    mimosa_odom_pub_ =
+        this->create_publisher<nav_msgs::msg::Odometry>(topic_out, 10);
+    RCLCPP_INFO(this->get_logger(), "Publishing VO → MIMOSA on %s",
+                topic_out.c_str());
+  }
+
   RCLCPP_INFO(this->get_logger(), "Visual Odom Node initialized. topic=%s",
               image_topic.c_str());
 }
@@ -118,6 +152,22 @@ void VisualOdomNode::declareAndLoadParameters(
       this->declare_parameter("output.save_tum_trajectory", true);
   tum_trajectory_path_ = this->declare_parameter(
       "output.tum_trajectory_path", std::string("vo_trajectory_tum.txt"));
+
+  // --- External integration (MIMOSA + DVL) ---
+  mimosa_inject_ =
+      this->declare_parameter("mimosa.enable_pose_injection", false);
+  mimosa_publish_ = this->declare_parameter("mimosa.enable_publish", false);
+  mimosa_use_origin_ = this->declare_parameter("mimosa.use_origin", false);
+  max_hint_age_s_ = this->declare_parameter("mimosa.max_hint_age_s", 0.25);
+  cov_inflate_per_s_ = this->declare_parameter("mimosa.cov_inflate_per_s", 1.0);
+  scale_enabled_ = this->declare_parameter("scale.enabled", false);
+  dvl_max_var_ = this->declare_parameter("scale.dvl_max_var", 0.01);
+
+  const std::vector<double> default_extrinsic = {0.0, 0.0, 0.0, 0.0,
+                                                 0.0, 0.0, 1.0};
+  const auto T_body_cam_v = this->declare_parameter<std::vector<double>>(
+      "extrinsics.T_body_cam", default_extrinsic);
+  T_body_cam_ = parseExtrinsic(T_body_cam_v);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -243,6 +293,15 @@ void VisualOdomNode::imageCallback(
     const double timestamp =
         msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
 
+    // 1. Push a MIMOSA-derived pose hint extrapolated to this image's
+    //    timestamp; predictPose() consumes it on the next frame.
+    if (mimosa_inject_ && latest_mimosa_.valid) {
+      frontend::VisualFrontend::ExternalPoseHint hint;
+      if (buildHintAt(timestamp, &hint)) {
+        visual_frontend_->setExternalPoseHint(hint);
+      }
+    }
+
     if (!visual_frontend_->handleImage(frontend_image, timestamp)) {
       return;
     }
@@ -251,6 +310,13 @@ void VisualOdomNode::imageCallback(
     if (frame) {
       publishAndLogPose(msg->header.stamp, frame->getPose(),
                         visual_frontend_->getLastCovariance());
+    }
+
+    // 2. New-KF event → forward to MIMOSA.
+    if (mimosa_publish_) {
+      if (auto out = visual_frontend_->consumeBackendOutput()) {
+        publishToMimosa(*out);
+      }
     }
 
     const auto &t = visual_frontend_->getLastTiming();
@@ -394,6 +460,163 @@ void VisualOdomNode::appendTumPose(const rclcpp::Time &stamp,
                         << tr.x() << " " << tr.y() << " " << tr.z() << " "
                         << q.x() << " " << q.y() << " " << q.z() << " "
                         << q.w() << "\n";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// External integration: MIMOSA pose injection + DVL velocity stream
+// ═══════════════════════════════════════════════════════════════════════════
+
+frontend::Pose3d VisualOdomNode::parseExtrinsic(const std::vector<double> &v) {
+  frontend::Pose3d T = frontend::Pose3d::Identity();
+  if (v.size() != 7) {
+    return T;
+  }
+  const Eigen::Vector3d t(v[0], v[1], v[2]);
+  Eigen::Quaterniond q(v[6], v[3], v[4], v[5]); // (w, x, y, z)
+  if (q.norm() < 1e-9) {
+    return T;
+  }
+  q.normalize();
+  T.linear() = q.toRotationMatrix();
+  T.translation() = t;
+  return T;
+}
+
+void VisualOdomNode::mimosaOdomCallback(
+    const nav_msgs::msg::Odometry::SharedPtr msg) {
+  // Pose: T_map_body
+  const auto &p = msg->pose.pose.position;
+  const auto &o = msg->pose.pose.orientation;
+  Eigen::Quaterniond q(o.w, o.x, o.y, o.z);
+  if (q.norm() < 1e-9) {
+    return;
+  }
+  q.normalize();
+  frontend::Pose3d T = frontend::Pose3d::Identity();
+  T.linear() = q.toRotationMatrix();
+  T.translation() = Eigen::Vector3d(p.x, p.y, p.z);
+
+  latest_mimosa_.T_map_body = T;
+  latest_mimosa_.v_body =
+      Eigen::Vector3d(msg->twist.twist.linear.x, msg->twist.twist.linear.y,
+                      msg->twist.twist.linear.z);
+  latest_mimosa_.omega_body =
+      Eigen::Vector3d(msg->twist.twist.angular.x, msg->twist.twist.angular.y,
+                      msg->twist.twist.angular.z);
+  // ROS pose covariance is row-major 6x6 in [trans(3), rot(3)] ordering;
+  // un-swap to dv_slam's [rot(3), trans(3)].
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      const int gi = i < 3 ? i + 3 : i - 3;
+      const int gj = j < 3 ? j + 3 : j - 3;
+      latest_mimosa_.cov(gi, gj) = msg->pose.covariance[i * 6 + j];
+    }
+  }
+  latest_mimosa_.t = rclcpp::Time(msg->header.stamp).seconds();
+  latest_mimosa_.valid = true;
+
+  // Forward MIMOSA's body-frame twist to the frontend as a DVL-style
+  // velocity sample. ROS twist covariance is row-major 6x6 [linear(3),
+  // angular(3)]; the upper-left 3x3 block is what we need.
+  if (scale_enabled_ && visual_frontend_) {
+    frontend::VisualFrontend::DvlSample s;
+    s.t = latest_mimosa_.t;
+    s.v_body = latest_mimosa_.v_body;
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        s.cov_body(i, j) = msg->twist.covariance[i * 6 + j];
+      }
+    }
+    s.bottom_lock = std::isfinite(s.cov_body.trace()) &&
+                    s.cov_body.trace() > 0.0 &&
+                    s.cov_body.trace() < dvl_max_var_;
+    visual_frontend_->pushDvlSample(s);
+  }
+
+  // First-message origin seeding: align dv_slam's world to mimosa_map.
+  if (mimosa_use_origin_ && !mimosa_origin_seeded_ && visual_frontend_ &&
+      !visual_frontend_->isInitialized()) {
+    const frontend::Pose3d T_w_cam = T * T_body_cam_;
+    visual_frontend_->setInitialPose(T_w_cam);
+    mimosa_origin_seeded_ = true;
+    RCLCPP_INFO(this->get_logger(),
+                "Seeded VO origin from MIMOSA: t=[%.3f %.3f %.3f]",
+                T_w_cam.translation().x(), T_w_cam.translation().y(),
+                T_w_cam.translation().z());
+  }
+}
+
+bool VisualOdomNode::buildHintAt(
+    double t_img, frontend::VisualFrontend::ExternalPoseHint *hint) const {
+  if (!hint || !latest_mimosa_.valid) {
+    return false;
+  }
+  const double dt = t_img - latest_mimosa_.t;
+  if (dt < 0.0 || dt > max_hint_age_s_) {
+    return false;
+  }
+
+  // Constant body-twist extrapolation: T_map_body_pred = T_map_body *
+  // exp([w*dt, v*dt]). We use a first-order SE(3) approximation: rotation via
+  // small-angle exp of (omega*dt), translation via (v*dt) in the body frame,
+  // then composed.
+  const Eigen::Vector3d phi = latest_mimosa_.omega_body * dt;
+  const double phi_norm = phi.norm();
+  Eigen::Matrix3d dR;
+  if (phi_norm < 1e-9) {
+    dR = Eigen::Matrix3d::Identity();
+  } else {
+    dR = Eigen::AngleAxisd(phi_norm, phi / phi_norm).toRotationMatrix();
+  }
+  frontend::Pose3d delta = frontend::Pose3d::Identity();
+  delta.linear() = dR;
+  delta.translation() = latest_mimosa_.v_body * dt;
+
+  const frontend::Pose3d T_map_body_pred = latest_mimosa_.T_map_body * delta;
+  hint->T_w_cam = T_map_body_pred * T_body_cam_;
+  hint->timestamp = t_img;
+  hint->covariance =
+      latest_mimosa_.cov + cov_inflate_per_s_ * std::abs(dt) *
+                               Eigen::Matrix<double, 6, 6>::Identity();
+  hint->valid = true;
+  return true;
+}
+
+void VisualOdomNode::publishToMimosa(const frontend::FrontendOutput &out) {
+  if (!mimosa_odom_pub_) {
+    return;
+  }
+  nav_msgs::msg::Odometry msg;
+  const int64_t sec = static_cast<int64_t>(std::floor(out.timestamp));
+  msg.header.stamp.sec = static_cast<int32_t>(sec);
+  msg.header.stamp.nanosec = static_cast<uint32_t>((out.timestamp - sec) * 1e9);
+  msg.header.frame_id = "mimosa_map";
+  msg.child_frame_id = "mimosa_body";
+
+  // Convert camera-frame world pose to body-frame world pose for MIMOSA.
+  // T_w_cam = T_w_body * T_body_cam  ⇒  T_w_body = T_w_cam * T_body_cam⁻¹.
+  const frontend::Pose3d T_w_body =
+      out.initial_estimate * T_body_cam_.inverse();
+
+  const auto &tr = T_w_body.translation();
+  msg.pose.pose.position.x = tr.x();
+  msg.pose.pose.position.y = tr.y();
+  msg.pose.pose.position.z = tr.z();
+  const Eigen::Quaterniond q(T_w_body.linear());
+  msg.pose.pose.orientation.x = q.x();
+  msg.pose.pose.orientation.y = q.y();
+  msg.pose.pose.orientation.z = q.z();
+  msg.pose.pose.orientation.w = q.w();
+
+  // [rot(3), trans(3)] → [trans(3), rot(3)] for ROS.
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      const int ri = i < 3 ? i + 3 : i - 3;
+      const int rj = j < 3 ? j + 3 : j - 3;
+      msg.pose.covariance[ri * 6 + rj] = out.pose_covariance(i, j);
+    }
+  }
+  mimosa_odom_pub_->publish(msg);
 }
 
 } // namespace visual_odom
