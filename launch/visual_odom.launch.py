@@ -20,7 +20,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'dataset_config',
-            default_value='datasets/aquaslam.yaml',
+            default_value='datasets/bluerov.yaml',
             description='Dataset parameter file path relative to config/'
         ),
         Node(
@@ -28,6 +28,6 @@ def generate_launch_description():
             executable='vo_node',
             name='visual_odom_node',
             output='screen',
-            parameters=[dv_slam_config, dataset_config, {'use_sim_time': True}]
+            parameters=[dv_slam_config, dataset_config, {'use_sim_time': False}]
         )
     ])

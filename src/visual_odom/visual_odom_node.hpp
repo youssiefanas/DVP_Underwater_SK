@@ -142,11 +142,15 @@ private:
                      frontend::VisualFrontend::ExternalPoseHint *hint) const;
 
     /**
-     * @brief Publish the visual odometry's latest KeyFrame pose as
-     *        nav_msgs/Odometry on the topic MIMOSA's odometry::Manager
-     *        subscribes to.
+     * @brief Publish a camera-frame world pose as nav_msgs/Odometry on the
+     *        topic MIMOSA's odometry::Manager subscribes to.
+     *
+     * Used by both the KF-event path (consumeBackendOutput) and the time-gated
+     * between-KF tracking-sample path. MIMOSA reconstructs the relative pose
+     * between consecutive messages and adds the BetweenFactor on its side.
      */
-    void publishToMimosa(const frontend::FrontendOutput &out);
+    void publishToMimosa(const frontend::Pose3d &T_w_cam, double timestamp,
+                         const Eigen::Matrix<double, 6, 6> &cov);
 
     /**
      * @brief Parse a 7-element extrinsic [tx ty tz qx qy qz qw] parameter
@@ -212,6 +216,9 @@ private:
     bool mimosa_publish_{false};      ///< Publish to odometry/manager/odometry_in.
     bool mimosa_use_origin_{false};   ///< Adopt MIMOSA's pose at t=0 as world origin.
     bool scale_enabled_{false};       ///< Subscribe to DVL and pipe samples to the frontend.
+    bool publish_between_kf_{true};   ///< Also publish tracking samples between KFs.
+    double publish_period_s_{0.2};    ///< Min wall-clock interval between publishes.
+    double last_publish_t_{0.0};      ///< Timestamp (s) of last publish to MIMOSA.
     double max_hint_age_s_{0.25};
     double cov_inflate_per_s_{1.0};
     double dvl_max_var_{0.01};        ///< DVL trace(cov) threshold for bottom-lock heuristic.

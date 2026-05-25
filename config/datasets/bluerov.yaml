@@ -1,0 +1,23 @@
+/**:
+  ros__parameters:
+    image_topic: "/cam0/image_raw"
+    # image_topic: "/camera/right/image_dehazed"
+
+    input:
+      image_transport: "compressed"
+
+    Camera:
+      model: pinhole
+      fx: 464.713152
+      fy: 464.59535932692995
+      cx: 328.21238510351685
+      cy: 267.44216059986354
+      k1: -0.325626
+      k2: 0.2043473
+      p1: 0.0006625
+      p2: 0.0008770
+      k3: -0.073206
+      undistort: true
+
+    output:
+      tum_trajectory_path: "bluerov_vo_trajectory_tum.txt"

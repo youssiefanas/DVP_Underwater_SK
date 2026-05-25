@@ -162,6 +162,7 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     map_->addKeyFrame(last_keyframe_);
     last_frame_ = current_frame;
     frames_since_last_kf_ = 0;
+    init_attempts_ = 0;
     stage_ = Stage::INITIALIZING;
 
     FrontendOutput output;
@@ -183,7 +184,16 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
     if (ok) {
       stage_ = Stage::TRACKING;
       last_frame_ = current_frame;
+      init_attempts_ = 0;
       std::cout << "[Frontend] Initialization → TRACKING" << std::endl;
+    } else {
+      init_attempts_++;
+      if (init_attempts_ >= kMaxInitAttempts) {
+        std::cout << "[Frontend Init] Stuck after " << init_attempts_
+                  << " attempts → refreshing reference KF" << std::endl;
+        refreshInitializationReference(current_frame);
+        init_attempts_ = 0;
+      }
     }
     frames_since_last_kf_++;
     return ok;
@@ -256,37 +266,69 @@ bool VisualFrontend::process(Frame::Ptr current_frame) {
 // ─────────────────────────────────────────────────────────────────
 
 bool VisualFrontend::tryInitialize(Frame::Ptr current_frame) {
-  if (!last_frame_ || !last_keyframe_)
+  // Log first few attempts at full rate, then every 10th to avoid spam.
+  const bool log_attempt =
+      (init_attempts_ < 3) || (init_attempts_ % 10 == 0);
+
+  if (!last_frame_ || !last_keyframe_) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] missing reference frame/KF" << std::endl;
     return false;
+  }
 
   // Match features between first keyframe and current frame
   auto matches = feature_matcher_->match(last_keyframe_->getDescriptors(),
                                          current_frame->getDescriptors(),
                                          kMatchRatioThreshold);
-  if (matches.size() < kMinMatchesForInit)
+  if (matches.size() < kMinMatchesForInit) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] too few descriptor matches: "
+                << matches.size() << " (need ≥ " << kMinMatchesForInit << ")"
+                << " [attempt " << init_attempts_ << "]" << std::endl;
     return false;
+  }
 
   std::vector<cv::Point2f> pts_prev, pts_curr;
   auto valid_matches = extractValidMatchedPoints(
       matches, last_keyframe_->getKeypoints(), current_frame->getKeypoints(),
       pts_prev, pts_curr);
-  if (pts_prev.size() < kMinMatchesForInit)
+  if (pts_prev.size() < kMinMatchesForInit) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] too few valid matches after filtering: "
+                << pts_prev.size() << " [attempt " << init_attempts_ << "]"
+                << std::endl;
     return false;
+  }
 
   // Essential matrix estimation
   cv::Mat R, t, mask;
-  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask))
+  if (!pose_estimator_->estimate(pts_prev, pts_curr, K_, R, t, mask)) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] essential matrix estimation failed"
+                << " (matches=" << pts_prev.size() << ")"
+                << " [attempt " << init_attempts_ << "]" << std::endl;
     return false;
+  }
 
   int inlier_count = cv::countNonZero(mask);
-  if (static_cast<size_t>(inlier_count) < kMinMatchesForInit)
+  if (static_cast<size_t>(inlier_count) < kMinMatchesForInit) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] too few essential-matrix inliers: "
+                << inlier_count << " / " << pts_prev.size()
+                << " [attempt " << init_attempts_ << "]" << std::endl;
     return false;
+  }
 
   // recoverPose returns T_curr_prev (x_curr = R*x_prev + t). We store T_w_c.
   Pose3d T_prev_curr = cvToPose3d(R, t).inverse();
   const double baseline_raw = T_prev_curr.translation().norm();
-  if (baseline_raw < kMinBaseline)
+  if (baseline_raw < kMinBaseline) {
+    if (log_attempt)
+      std::cout << "[Frontend Init] insufficient baseline: " << baseline_raw
+                << " (need ≥ " << kMinBaseline << ", likely near-pure rotation)"
+                << " [attempt " << init_attempts_ << "]" << std::endl;
     return false;
+  }
 
   // Filter matches and points by geometric inlier mask
   std::vector<cv::DMatch> inlier_matches;
@@ -770,6 +812,7 @@ void VisualFrontend::resetToInitializing() {
   consecutive_failures_ = 0;
   lost_frames_ = 0;
   frames_since_last_kf_ = 0;
+  init_attempts_ = 0;
 
   // Transition back to NO_IMAGES_YET — the next frame will
   // start a fresh map segment anchored at the last known pose
@@ -777,6 +820,28 @@ void VisualFrontend::resetToInitializing() {
 
   std::cout << "[Frontend] Reset complete. Last known pose: "
             << restart_pose.translation().transpose() << std::endl;
+}
+
+void VisualFrontend::refreshInitializationReference(Frame::Ptr current_frame) {
+  // Drop the stale init KF (it has no map points and is just a descriptor
+  // anchor that's no longer useful).
+  if (last_keyframe_)
+    map_->removeKeyFrame(last_keyframe_);
+
+  // Re-anchor at last_good_pose_. We have no tracking signal during
+  // INITIALIZING so we can't know how far the camera actually moved; the
+  // backend's other sensors are expected to correct any anchor error.
+  current_frame->setPose(last_good_pose_);
+  last_keyframe_ = KeyFrame::create(current_frame);
+  last_keyframe_->registerMapPointObservations();
+  reference_keyframe_ = last_keyframe_;
+  map_->addKeyFrame(last_keyframe_);
+  last_frame_ = current_frame;
+  frames_since_last_kf_ = 0;
+
+  std::cout << "[Frontend Init] Refreshed reference → KF "
+            << last_keyframe_->getId() << " at "
+            << last_good_pose_.translation().transpose() << std::endl;
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -160,6 +160,9 @@ void VisualOdomNode::declareAndLoadParameters(
   mimosa_use_origin_ = this->declare_parameter("mimosa.use_origin", false);
   max_hint_age_s_ = this->declare_parameter("mimosa.max_hint_age_s", 0.25);
   cov_inflate_per_s_ = this->declare_parameter("mimosa.cov_inflate_per_s", 1.0);
+  publish_between_kf_ =
+      this->declare_parameter("mimosa.publish_between_kf", true);
+  publish_period_s_ = this->declare_parameter("mimosa.publish_period_s", 0.2);
   scale_enabled_ = this->declare_parameter("scale.enabled", false);
   dvl_max_var_ = this->declare_parameter("scale.dvl_max_var", 0.01);
 
@@ -312,20 +315,29 @@ void VisualOdomNode::imageCallback(
                         visual_frontend_->getLastCovariance());
     }
 
-    // 2. New-KF event → forward to MIMOSA.
+    // 2. Forward to MIMOSA. New-KF events take priority; otherwise emit a
+    //    time-gated between-KF tracking sample so the smoother gets steady
+    //    relative-pose constraints during station keeping.
     if (mimosa_publish_) {
       if (auto out = visual_frontend_->consumeBackendOutput()) {
-        publishToMimosa(*out);
+        publishToMimosa(out->initial_estimate, out->timestamp,
+                        out->pose_covariance);
+        last_publish_t_ = timestamp;
+      } else if (publish_between_kf_ && frame &&
+                 (timestamp - last_publish_t_) >= publish_period_s_) {
+        publishToMimosa(frame->getPose(), timestamp,
+                        visual_frontend_->getLastCovariance());
+        last_publish_t_ = timestamp;
       }
     }
 
     const auto &t = visual_frontend_->getLastTiming();
-    RCLCPP_INFO_THROTTLE(
-        this->get_logger(), *this->get_clock(), 2000,
-        "Frame timing (ms): preprocess=%.1f  extraction=%.1f  "
-        "tracking=%.1f  viewer=%.1f  total=%.1f",
-        preprocess_ms, t.extraction_ms, t.tracking_ms, t.viewer_ms,
-        preprocess_ms + t.total_ms);
+    // RCLCPP_INFO_THROTTLE(
+    // this->get_logger(), *this->get_clock(), 2000,
+    // "Frame timing (ms): preprocess=%.1f  extraction=%.1f  "
+    // "tracking=%.1f  viewer=%.1f  total=%.1f",
+    // preprocess_ms, t.extraction_ms, t.tracking_ms, t.viewer_ms,
+    // preprocess_ms + t.total_ms);
   } catch (const cv_bridge::Exception &e) {
     RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
   }
@@ -582,21 +594,22 @@ bool VisualOdomNode::buildHintAt(
   return true;
 }
 
-void VisualOdomNode::publishToMimosa(const frontend::FrontendOutput &out) {
+void VisualOdomNode::publishToMimosa(const frontend::Pose3d &T_w_cam,
+                                     double timestamp,
+                                     const Eigen::Matrix<double, 6, 6> &cov) {
   if (!mimosa_odom_pub_) {
     return;
   }
   nav_msgs::msg::Odometry msg;
-  const int64_t sec = static_cast<int64_t>(std::floor(out.timestamp));
+  const int64_t sec = static_cast<int64_t>(std::floor(timestamp));
   msg.header.stamp.sec = static_cast<int32_t>(sec);
-  msg.header.stamp.nanosec = static_cast<uint32_t>((out.timestamp - sec) * 1e9);
+  msg.header.stamp.nanosec = static_cast<uint32_t>((timestamp - sec) * 1e9);
   msg.header.frame_id = "mimosa_map";
   msg.child_frame_id = "mimosa_body";
 
   // Convert camera-frame world pose to body-frame world pose for MIMOSA.
   // T_w_cam = T_w_body * T_body_cam  ⇒  T_w_body = T_w_cam * T_body_cam⁻¹.
-  const frontend::Pose3d T_w_body =
-      out.initial_estimate * T_body_cam_.inverse();
+  const frontend::Pose3d T_w_body = T_w_cam * T_body_cam_.inverse();
 
   const auto &tr = T_w_body.translation();
   msg.pose.pose.position.x = tr.x();
@@ -613,7 +626,7 @@ void VisualOdomNode::publishToMimosa(const frontend::FrontendOutput &out) {
     for (int j = 0; j < 6; ++j) {
       const int ri = i < 3 ? i + 3 : i - 3;
       const int rj = j < 3 ? j + 3 : j - 3;
-      msg.pose.covariance[ri * 6 + rj] = out.pose_covariance(i, j);
+      msg.pose.covariance[ri * 6 + rj] = cov(i, j);
     }
   }
   mimosa_odom_pub_->publish(msg);

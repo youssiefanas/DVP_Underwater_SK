@@ -439,6 +439,16 @@ private:
     void resetToInitializing();
 
     /**
+     * @brief Replace the initialization reference KeyFrame with @p current_frame.
+     *
+     * Watchdog used when INITIALIZING gets stuck against a bad first reference
+     * (low texture, near-pure rotation, scene change). Drops the stale init KF
+     * from the map and anchors a fresh one at last_good_pose_ so subsequent
+     * matches have a chance of succeeding.
+     */
+    void refreshInitializationReference(Frame::Ptr current_frame);
+
+    /**
      * @brief Build a DVL-derived translation prior for the [t0, t1] interval.
      *
      * Trapezoidally integrates dvl_buf_ samples spanning [t0, t1], drops
@@ -495,6 +505,7 @@ private:
     bool has_velocity_ = false;           ///< True once at least one velocity estimate exists.
     int consecutive_failures_ = 0;        ///< Consecutive frames where tracking failed.
     int lost_frames_ = 0;                 ///< Frames spent in LOST state.
+    int init_attempts_ = 0;               ///< Failed init attempts since entering INITIALIZING.
     Pose3d last_good_pose_{Pose3d::Identity()};  ///< Last successfully tracked pose (for recovery).
 
     /// Pending output for the backend (consumed by the VO node).
@@ -541,6 +552,7 @@ private:
         18.0; ///< Max allowed jump rotation(degrees).
     static constexpr int kMaxConsecutiveFailures = 5;       ///< Failures before transitioning to LOST.
     static constexpr int kMaxRelocFrames = 30;              ///< Max frames in LOST before re-initialization.
+    static constexpr int kMaxInitAttempts = 30;             ///< Failed inits before refreshing the reference KF.
     static constexpr int kMinInitMapPoints = 25;            ///< Min triangulated points for init to succeed.
     static constexpr int kMinTrackedMapPoints = 30;         ///< Below this count, force a new KF.
     static constexpr int kMinProjectionMatches = 12;        ///< Min projection matches before widening search.
