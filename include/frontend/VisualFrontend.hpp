@@ -543,7 +543,7 @@ private:
     // ─── KeyFrame insertion thresholds ───────────────────────────
     int frames_since_last_kf_ = 0;                          ///< Frame counter since last KF.
     static constexpr int kMinFramesBetweenKF = 5;           ///< Min frames before allowing a new KF.
-    static constexpr double kMinBaseline = 0.15;            ///< Min translation to trigger KF (meters).
+    static constexpr double kMinBaseline = 0.10;            ///< Min translation to trigger KF (meters).
     static constexpr double kMinRotationDeg = 10.0;         ///< Min rotation to trigger KF (degrees).
 
     // ─── Tracking / PnP thresholds ──────────────────────────────

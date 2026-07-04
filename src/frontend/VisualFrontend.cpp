@@ -120,7 +120,15 @@ bool VisualFrontend::handleImage(const cv::Mat &gray_image, double timestamp) {
 
   if (viewer_) {
     cv::Mat img_out;
-    cv::drawKeypoints(frame->getImage(), frame->getKeypoints(), img_out);
+    std::vector<cv::KeyPoint> tracked_kps;
+    const auto &kps = frame->getKeypoints();
+    const auto &mps = frame->getMapPoints();
+    for (size_t i = 0; i < kps.size(); ++i) {
+      if (i < mps.size() && mps[i] && !mps[i]->isBad_) {
+        tracked_kps.push_back(kps[i]);
+      }
+    }
+    cv::drawKeypoints(frame->getImage(), tracked_kps, img_out, cv::Scalar(0, 255, 0));
     viewer_->show(img_out);
   }
 
